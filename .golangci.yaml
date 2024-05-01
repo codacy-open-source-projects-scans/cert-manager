@@ -3,38 +3,16 @@ issues:
     - linters:
         - dogsled
         - errcheck
-        - misspell
         - contextcheck
-        - unparam
         - promlinter
         - errname
-        - tenv
         - exhaustive
-        - gocritic
-        - gci
         - nilerr
-        - tagalign
-        - dupword
-        - bodyclose
-        - loggercheck
-        - forbidigo
         - interfacebloat
-        - predeclared
-        - unused
-        - unconvert
-        - usestdlibvars
         - noctx
         - nilnil
-        - gosimple
         - nakedret
-        - asasalint
-        - ginkgolinter
-        - goprintffuncname
-        - ineffassign
         - musttag
-        - wastedassign
-        - nosprintfhostport
-        - exportloopref
         - gomoddirectives
       text: ".*"
     - linters:
@@ -45,7 +23,7 @@ issues:
       text: "SA(1002|1006|4000|4006)"
     - linters:
         - staticcheck
-      text: "(NewCertManagerBasicCertificateRequest|DeprecatedCertificateTemplateFromCertificateRequestAndAllowInsecureCSRUsageDefinition)"
+      text: "(NewCertManagerBasicCertificateRequest)"
 linters:
   # Explicitly define all enabled linters
   disable-all: true
@@ -73,8 +51,6 @@ linters:
     - gocritic
     - gofmt
     - goheader
-    - gomoddirectives
-    - gomodguard
     - goprintffuncname
     - gosec
     - gosimple

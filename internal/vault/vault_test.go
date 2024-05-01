@@ -1097,10 +1097,10 @@ type testNewConfigT struct {
 func TestNewConfig(t *testing.T) {
 	caBundleSecretRefFakeSecretLister := func(namespace, secret, key, cert string) *listers.FakeSecretLister {
 		return listers.FakeSecretListerFrom(listers.NewFakeSecretLister(), func(f *listers.FakeSecretLister) {
-			f.SecretsFn = func(namespace string) clientcorev1.SecretNamespaceLister {
+			f.SecretsFn = func(listerNamespace string) clientcorev1.SecretNamespaceLister {
 				return listers.FakeSecretNamespaceListerFrom(listers.NewFakeSecretNamespaceLister(), func(fn *listers.FakeSecretNamespaceLister) {
 					fn.GetFn = func(name string) (*corev1.Secret, error) {
-						if name == secret && namespace == namespace {
+						if name == secret && listerNamespace == namespace {
 							return &corev1.Secret{
 								Data: map[string][]byte{
 									key: []byte(cert),
@@ -1114,10 +1114,10 @@ func TestNewConfig(t *testing.T) {
 	}
 	clientCertificateSecretRefFakeSecretLister := func(namespace, secret, caKey, caCert, clientKey, clientCert, privateKey, privateKeyCert string) *listers.FakeSecretLister {
 		return listers.FakeSecretListerFrom(listers.NewFakeSecretLister(), func(f *listers.FakeSecretLister) {
-			f.SecretsFn = func(namespace string) clientcorev1.SecretNamespaceLister {
+			f.SecretsFn = func(listerNamespace string) clientcorev1.SecretNamespaceLister {
 				return listers.FakeSecretNamespaceListerFrom(listers.NewFakeSecretNamespaceLister(), func(fn *listers.FakeSecretNamespaceLister) {
 					fn.GetFn = func(name string) (*corev1.Secret, error) {
-						if name == secret && namespace == namespace {
+						if name == secret && listerNamespace == namespace {
 							return &corev1.Secret{
 								Data: map[string][]byte{
 									caKey:      []byte(caCert),
@@ -1159,7 +1159,7 @@ func TestNewConfig(t *testing.T) {
 				}),
 			),
 			expectedErr: nil,
-			checkFunc: func(cfg *vault.Config, error error) error {
+			checkFunc: func(cfg *vault.Config, err error) error {
 				testCA := x509.NewCertPool()
 				testCA.AppendCertsFromPEM([]byte(testLeafCertificate))
 				clientCA := cfg.HttpClient.Transport.(*http.Transport).TLSClientConfig.RootCAs
@@ -1185,9 +1185,9 @@ func TestNewConfig(t *testing.T) {
 					},
 				},
 				)),
-			checkFunc: func(cfg *vault.Config, error error) error {
-				if error != nil {
-					return error
+			checkFunc: func(cfg *vault.Config, err error) error {
+				if err != nil {
+					return err
 				}
 
 				testCA := x509.NewCertPool()
@@ -1214,9 +1214,9 @@ func TestNewConfig(t *testing.T) {
 					},
 				},
 				)),
-			checkFunc: func(cfg *vault.Config, error error) error {
-				if error != nil {
-					return error
+			checkFunc: func(cfg *vault.Config, err error) error {
+				if err != nil {
+					return err
 				}
 
 				testCA := x509.NewCertPool()
@@ -1291,9 +1291,9 @@ func TestNewConfig(t *testing.T) {
 					},
 				},
 				)),
-			checkFunc: func(cfg *vault.Config, error error) error {
-				if error != nil {
-					return error
+			checkFunc: func(cfg *vault.Config, err error) error {
+				if err != nil {
+					return err
 				}
 
 				certificates := cfg.HttpClient.Transport.(*http.Transport).TLSClientConfig.Certificates

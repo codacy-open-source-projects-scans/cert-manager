@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/dns/v1"
 
 	"github.com/cert-manager/cert-manager/pkg/issuer/acme/dns/util"
-	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -36,35 +36,28 @@ func init() {
 	}
 }
 
-func restoreGCloudEnv() {
-	os.Setenv("GCE_PROJECT", gcloudProject)
-}
-
 func TestNewDNSProviderValid(t *testing.T) {
 	if !gcloudLiveTest {
 		t.Skip("skipping live test (requires credentials)")
 	}
-	os.Setenv("GCE_PROJECT", "")
+	t.Setenv("GCE_PROJECT", "")
 	_, err := NewDNSProviderCredentials("my-project", util.RecursiveNameservers, "")
 	assert.NoError(t, err)
-	restoreGCloudEnv()
 }
 
 func TestNewDNSProviderValidEnv(t *testing.T) {
 	if !gcloudLiveTest {
 		t.Skip("skipping live test (requires credentials)")
 	}
-	os.Setenv("GCE_PROJECT", "my-project")
+	t.Setenv("GCE_PROJECT", "my-project")
 	_, err := NewDNSProviderEnvironment(util.RecursiveNameservers, "")
 	assert.NoError(t, err)
-	restoreGCloudEnv()
 }
 
 func TestNewDNSProviderMissingCredErr(t *testing.T) {
-	os.Setenv("GCE_PROJECT", "")
+	t.Setenv("GCE_PROJECT", "")
 	_, err := NewDNSProviderEnvironment(util.RecursiveNameservers, "")
 	assert.EqualError(t, err, "Google Cloud project name missing")
-	restoreGCloudEnv()
 }
 
 func TestLiveGoogleCloudPresent(t *testing.T) {

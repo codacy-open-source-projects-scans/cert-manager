@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 
@@ -34,6 +32,9 @@ import (
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	csrutil "github.com/cert-manager/cert-manager/pkg/controller/certificatesigningrequests/util"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 var _ = framework.ConformanceDescribe("CertificateSigningRequests", func() {
@@ -81,7 +82,7 @@ func (k *kubernetes) createIssuer(f *framework.Framework) string {
 			GenerateName: "vault-issuer-",
 			Namespace:    f.Namespace.Name,
 		},
-		Spec: k.issuerSpec(f),
+		Spec: k.issuerSpec(),
 	}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
 
@@ -101,7 +102,7 @@ func (k *kubernetes) createClusterIssuer(f *framework.Framework) string {
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "vault-issuer-",
 		},
-		Spec: k.issuerSpec(f),
+		Spec: k.issuerSpec(),
 	}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
 
@@ -149,7 +150,7 @@ func (k *kubernetes) initVault(f *framework.Framework, boundNS string) {
 	Expect(err).NotTo(HaveOccurred())
 }
 
-func (k *kubernetes) issuerSpec(f *framework.Framework) cmapi.IssuerSpec {
+func (k *kubernetes) issuerSpec() cmapi.IssuerSpec {
 	return cmapi.IssuerSpec{
 		IssuerConfig: cmapi.IssuerConfig{
 			Vault: &cmapi.VaultIssuer{

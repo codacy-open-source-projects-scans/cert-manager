@@ -20,8 +20,6 @@ import (
 	"context"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cert-manager/cert-manager/e2e-tests/framework"
@@ -31,6 +29,9 @@ import (
 	"github.com/cert-manager/cert-manager/e2e-tests/suite/conformance/certificates"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 var _ = framework.ConformanceDescribe("Certificates", func() {
@@ -90,7 +91,7 @@ func (v *vaultAppRoleProvisioner) createIssuer(f *framework.Framework) cmmeta.Ob
 	appRoleSecretGeneratorName := "vault-approle-secret-"
 	By("Creating a VaultAppRole Issuer")
 
-	v.vaultSecrets = v.initVault(f)
+	v.vaultSecrets = v.initVault()
 
 	sec, err := f.KubeClientSet.CoreV1().Secrets(f.Namespace.Name).Create(context.TODO(), vault.NewVaultAppRoleSecret(appRoleSecretGeneratorName, v.secretID), metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred(), "vault to store app role secret from vault")
@@ -102,7 +103,7 @@ func (v *vaultAppRoleProvisioner) createIssuer(f *framework.Framework) cmmeta.Ob
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "vault-issuer-",
 		},
-		Spec: v.createIssuerSpec(f),
+		Spec: v.createIssuerSpec(),
 	}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred(), "failed to create vault issuer")
 
@@ -122,7 +123,7 @@ func (v *vaultAppRoleProvisioner) createClusterIssuer(f *framework.Framework) cm
 	appRoleSecretGeneratorName := "vault-approle-secret-"
 	By("Creating a VaultAppRole ClusterIssuer")
 
-	v.vaultSecrets = v.initVault(f)
+	v.vaultSecrets = v.initVault()
 
 	sec, err := f.KubeClientSet.CoreV1().Secrets(f.Config.Addons.CertManager.ClusterResourceNamespace).Create(context.TODO(), vault.NewVaultAppRoleSecret(appRoleSecretGeneratorName, v.secretID), metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred(), "vault to store app role secret from vault")
@@ -134,7 +135,7 @@ func (v *vaultAppRoleProvisioner) createClusterIssuer(f *framework.Framework) cm
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "vault-cluster-issuer-",
 		},
-		Spec: v.createIssuerSpec(f),
+		Spec: v.createIssuerSpec(),
 	}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred(), "failed to create vault issuer")
 
@@ -150,7 +151,7 @@ func (v *vaultAppRoleProvisioner) createClusterIssuer(f *framework.Framework) cm
 	}
 }
 
-func (v *vaultAppRoleProvisioner) initVault(f *framework.Framework) *vaultSecrets {
+func (v *vaultAppRoleProvisioner) initVault() *vaultSecrets {
 	By("Configuring the VaultAppRole server")
 	v.setup = vault.NewVaultInitializerAppRole(
 		addon.Base.Details().KubeClient,
@@ -169,7 +170,7 @@ func (v *vaultAppRoleProvisioner) initVault(f *framework.Framework) *vaultSecret
 	}
 }
 
-func (v *vaultAppRoleProvisioner) createIssuerSpec(f *framework.Framework) cmapi.IssuerSpec {
+func (v *vaultAppRoleProvisioner) createIssuerSpec() cmapi.IssuerSpec {
 	return cmapi.IssuerSpec{
 		IssuerConfig: cmapi.IssuerConfig{
 			Vault: &cmapi.VaultIssuer{

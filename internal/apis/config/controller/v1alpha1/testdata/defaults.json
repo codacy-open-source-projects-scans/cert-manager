@@ -16,6 +16,7 @@
 	"issuerAmbientCredentials": false,
 	"clusterIssuerAmbientCredentials": true,
 	"enableCertificateOwnerRef": false,
+	"enableGatewayAPI": false,
 	"copiedAnnotationPrefixes": [
 		"*",
 		"-kubectl.kubernetes.io/",
@@ -39,6 +40,9 @@
 		"flushFrequency": "5s",
 		"verbosity": 0,
 		"options": {
+			"text": {
+				"infoBufferSize": "0"
+			},
 			"json": {
 				"infoBufferSize": "0"
 			}
