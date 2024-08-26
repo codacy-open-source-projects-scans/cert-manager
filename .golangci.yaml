@@ -1,6 +1,9 @@
 issues:
   exclude-rules:
     - linters:
+        - govet
+        - usestdlibvars
+        - misspell
         - dogsled
         - promlinter
         - errname
@@ -37,7 +40,6 @@ linters:
     - errcheck
     - errchkjson
     - errname
-    - execinquery
     - exhaustive
     - exportloopref
     - forbidigo
