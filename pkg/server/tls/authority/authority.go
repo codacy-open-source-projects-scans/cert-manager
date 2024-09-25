@@ -229,7 +229,7 @@ func (d *DynamicAuthority) Sign(template *x509.Certificate) (*x509.Certificate, 
 	return cert, nil
 }
 
-// WatchRotation will returns a channel that fires notifications if the CA
+// WatchRotation will return a channel that fires notifications if the CA
 // certificate is rotated/updated.
 // This can be used to automatically trigger rotation of leaf certificates
 // when the root CA changes.
@@ -386,6 +386,9 @@ func (d *DynamicAuthority) regenerateCA(ctx context.Context, s *corev1.Secret) e
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      d.SecretName,
 				Namespace: d.SecretNamespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by": "cert-manager",
+				},
 				Annotations: map[string]string{
 					cmapi.AllowsInjectionFromSecretAnnotation: "true",
 				},

@@ -16,12 +16,13 @@ limitations under the License.
 
 // feature contains controller's feature gate setup functionality. Do not import
 // this package into any code that's shared with other components to prevent
-// overwriting other component's featue gates, see i.e
+// overwriting other component's feature gates, see i.e
 // https://github.com/cert-manager/cert-manager/issues/6011
 package feature
 
 import (
 	"k8s.io/apimachinery/pkg/util/runtime"
+	clientfeatures "k8s.io/client-go/features"
 	"k8s.io/component-base/featuregate"
 
 	utilfeature "github.com/cert-manager/cert-manager/pkg/util/feature"
@@ -137,10 +138,28 @@ const (
 	// Certificate resources.
 	// Github Issue: https://github.com/cert-manager/cert-manager/issues/6393
 	OtherNames featuregate.Feature = "OtherNames"
+
+	// Owner: @jsoref
+	// Alpha: v1.16
+	//
+	// UseDomainQualifiedFinalizer changes the finalizer added to cert-manager created
+	// resources to acme.cert-manager.io/finalizer instead of finalizer.acme.cert-manager.io.
+	// GitHub Issue: https://github.com/cert-manager/cert-manager/issues/7266
+	UseDomainQualifiedFinalizer featuregate.Feature = "UseDomainQualifiedFinalizer"
 )
 
 func init() {
 	runtime.Must(utilfeature.DefaultMutableFeatureGate.Add(defaultCertManagerFeatureGates))
+
+	// Register all client-go features with cert-manager's feature gate instance
+	// and make all client-go feature checks use cert-manager's instance. The
+	// effect is that client-go features are wired to the existing
+	// --feature-gates flag just as all other features are. Further, client-go
+	// features automatically support the existing mechanisms for feature
+	// enablement metrics and test overrides.
+	ca := utilfeature.NewClientGoAdapter(utilfeature.DefaultMutableFeatureGate)
+	runtime.Must(clientfeatures.AddFeaturesToExistingFeatureGates(ca))
+	clientfeatures.ReplaceFeatureGates(ca)
 }
 
 // defaultCertManagerFeatureGates consists of all known cert-manager feature keys.
@@ -160,4 +179,5 @@ var defaultCertManagerFeatureGates = map[featuregate.Feature]featuregate.Feature
 	UseCertificateRequestBasicConstraints:            {Default: false, PreRelease: featuregate.Alpha},
 	NameConstraints:                                  {Default: false, PreRelease: featuregate.Alpha},
 	OtherNames:                                       {Default: false, PreRelease: featuregate.Alpha},
+	UseDomainQualifiedFinalizer:                      {Default: false, PreRelease: featuregate.Alpha},
 }

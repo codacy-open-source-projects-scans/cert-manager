@@ -25,8 +25,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	route53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go/logging"
 	"github.com/aws/smithy-go/middleware"
-	"github.com/go-logr/logr"
 
 	"github.com/cert-manager/cert-manager/pkg/issuer/acme/dns/util"
 	logf "github.com/cert-manager/cert-manager/pkg/logs"
@@ -41,9 +41,7 @@ type DNSProvider struct {
 	dns01Nameservers []string
 	client           *route53.Client
 	hostedZoneID     string
-	log              logr.Logger
-
-	userAgent string
+	userAgent        string
 }
 
 type sessionProvider struct {
@@ -54,7 +52,6 @@ type sessionProvider struct {
 	Role             string
 	WebIdentityToken string
 	StsProvider      func(aws.Config) StsClient
-	log              logr.Logger
 	userAgent        string
 }
 
@@ -78,17 +75,37 @@ func (d *sessionProvider) GetSession(ctx context.Context) (aws.Config, error) {
 
 	useAmbientCredentials := d.Ambient && (d.AccessKeyID == "" && d.SecretAccessKey == "") && d.WebIdentityToken == ""
 
-	var optFns []func(*config.LoadOptions) error
+	log := logf.FromContext(ctx)
+	optFns := []func(*config.LoadOptions) error{
+		// Print AWS API requests but only at cert-manager debug level
+		config.WithLogger(logging.LoggerFunc(func(classification logging.Classification, format string, v ...interface{}) {
+			log := log.WithValues("aws-classification", classification)
+			if classification == logging.Debug {
+				log = log.V(logf.DebugLevel)
+			}
+			log.Info(fmt.Sprintf(format, v...))
+		})),
+		config.WithClientLogMode(aws.LogDeprecatedUsage | aws.LogRequest),
+		config.WithLogConfigurationWarnings(true),
+		// Append cert-manager user-agent string to all AWS API requests
+		config.WithAPIOptions(
+			[]func(*middleware.Stack) error{
+				func(stack *middleware.Stack) error {
+					return awsmiddleware.AddUserAgentKeyValue("cert-manager", d.userAgent)(stack)
+				},
+			},
+		),
+	}
 	switch {
 	case d.Role != "" && d.WebIdentityToken != "":
-		d.log.V(logf.DebugLevel).Info("using assume role with web identity")
+		log.V(logf.DebugLevel).Info("using assume role with web identity")
 	case useAmbientCredentials:
-		d.log.V(logf.DebugLevel).Info("using ambient credentials")
+		log.V(logf.DebugLevel).Info("using ambient credentials")
 		// Leaving credentials unset results in a default credential chain being
 		// used; this chain is a reasonable default for getting ambient creds.
 		// https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html#specifying-credentials
 	default:
-		d.log.V(logf.DebugLevel).Info("not using ambient credentials")
+		log.V(logf.DebugLevel).Info("not using ambient credentials")
 		optFns = append(optFns, config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(d.AccessKeyID, d.SecretAccessKey, "")))
 	}
 
@@ -105,7 +122,7 @@ func (d *sessionProvider) GetSession(ctx context.Context) (aws.Config, error) {
 	stsCfg.Region = "aws-global"
 
 	if d.Role != "" && d.WebIdentityToken == "" {
-		d.log.V(logf.DebugLevel).WithValues("role", d.Role).Info("assuming role")
+		log.V(logf.DebugLevel).WithValues("role", d.Role).Info("assuming role")
 		stsSvc := d.StsProvider(stsCfg)
 		result, err := stsSvc.AssumeRole(ctx, &sts.AssumeRoleInput{
 			RoleArn:         aws.String(d.Role),
@@ -123,7 +140,7 @@ func (d *sessionProvider) GetSession(ctx context.Context) (aws.Config, error) {
 	}
 
 	if d.Role != "" && d.WebIdentityToken != "" {
-		d.log.V(logf.DebugLevel).WithValues("role", d.Role).Info("assuming role with web identity")
+		log.V(logf.DebugLevel).WithValues("role", d.Role).Info("assuming role with web identity")
 
 		stsSvc := d.StsProvider(stsCfg)
 		result, err := stsSvc.AssumeRoleWithWebIdentity(ctx, &sts.AssumeRoleWithWebIdentityInput{
@@ -150,10 +167,6 @@ func (d *sessionProvider) GetSession(ctx context.Context) (aws.Config, error) {
 		cfg.Region = d.Region
 	}
 
-	cfg.APIOptions = append(cfg.APIOptions, func(stack *middleware.Stack) error {
-		return awsmiddleware.AddUserAgentKeyValue("cert-manager", d.userAgent)(stack)
-	})
-
 	return cfg, nil
 }
 
@@ -166,7 +179,6 @@ func newSessionProvider(accessKeyID, secretAccessKey, region, role string, webId
 		Role:             role,
 		WebIdentityToken: webIdentityToken,
 		StsProvider:      defaultSTSProvider,
-		log:              logf.Log.WithName("route53-session-provider"),
 		userAgent:        userAgent,
 	}
 }
@@ -198,7 +210,6 @@ func NewDNSProvider(
 		client:           client,
 		hostedZoneID:     hostedZoneID,
 		dns01Nameservers: dns01Nameservers,
-		log:              logf.Log.WithName("route53"),
 		userAgent:        userAgent,
 	}, nil
 }
@@ -216,6 +227,7 @@ func (r *DNSProvider) CleanUp(ctx context.Context, domain, fqdn, value string) e
 }
 
 func (r *DNSProvider) changeRecord(ctx context.Context, action route53types.ChangeAction, fqdn, value string, ttl int) error {
+	log := logf.FromContext(ctx)
 	hostedZoneID, err := r.getHostedZoneID(ctx, fqdn)
 	if err != nil {
 		return fmt.Errorf("failed to determine Route 53 hosted zone ID: %v", err)
@@ -238,7 +250,7 @@ func (r *DNSProvider) changeRecord(ctx context.Context, action route53types.Chan
 	resp, err := r.client.ChangeResourceRecordSets(ctx, reqParams)
 	if err != nil {
 		if errors.Is(err, &route53types.InvalidChangeBatch{}) && action == route53types.ChangeActionDelete {
-			r.log.V(logf.DebugLevel).WithValues("error", err).Info("ignoring InvalidChangeBatch error")
+			log.V(logf.DebugLevel).WithValues("error", err).Info("ignoring InvalidChangeBatch error")
 			// If we try to delete something and get a 'InvalidChangeBatch' that
 			// means it's already deleted, no need to consider it an error.
 			return nil
@@ -325,16 +337,16 @@ func newTXTRecordSet(fqdn, value string, ttl int) *route53types.ResourceRecordSe
 // want our error messages to be the same when the cause is the same to
 // avoid spurious challenge updates.
 //
-// The given error must not be nil. This function must be called everywhere
-// we have a non-nil error coming from an aws-sdk-go func. The passed error
-// is modified in place. This function does not work in case the full error
-// message is pre-generated at construction time (instead of when Error() is
-// called), which is the case for eg. fmt.Errorf("error message: %w", err).
+// This function must be called everywhere we have an error coming from
+// an aws-sdk-go func. The passed error is modified in place.
 func removeReqID(err error) error {
 	var responseError *awshttp.ResponseError
 	if errors.As(err, &responseError) {
+		before := responseError.Error()
 		// remove the request id from the error message
 		responseError.RequestID = "<REDACTED>"
+		after := responseError.Error()
+		return errors.New(strings.Replace(err.Error(), before, after, 1))
 	}
 	return err
 }
