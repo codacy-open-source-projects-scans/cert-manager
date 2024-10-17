@@ -18,6 +18,7 @@ package framework
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	api "k8s.io/api/core/v1"
@@ -163,14 +164,13 @@ func (f *Framework) BeforeEach(ctx context.Context) {
 func (f *Framework) AfterEach(ctx context.Context) {
 	RemoveCleanupAction(f.cleanupHandle)
 
-	f.printAddonLogs()
+	f.printAddonLogs(ctx)
 
 	if !f.Config.Cleanup {
 		return
 	}
 
-	for i := len(f.requiredAddons) - 1; i >= 0; i-- {
-		a := f.requiredAddons[i]
+	for _, a := range slices.Backward(f.requiredAddons) {
 		By("De-provisioning test-scoped addon")
 		err := a.Deprovision(ctx)
 		Expect(err).NotTo(HaveOccurred())
@@ -181,11 +181,11 @@ func (f *Framework) AfterEach(ctx context.Context) {
 	Expect(err).NotTo(HaveOccurred())
 }
 
-func (f *Framework) printAddonLogs() {
+func (f *Framework) printAddonLogs(ctx context.Context) {
 	if CurrentSpecReport().Failed() {
 		for _, a := range f.requiredAddons {
 			if a, ok := a.(loggableAddon); ok {
-				l, err := a.Logs()
+				l, err := a.Logs(ctx)
 				Expect(err).NotTo(HaveOccurred())
 
 				for ident, l := range l {
@@ -212,7 +212,7 @@ func (f *Framework) RequireGlobalAddon(a addon.Addon) {
 }
 
 type loggableAddon interface {
-	Logs() (map[string]string, error)
+	Logs(ctx context.Context) (map[string]string, error)
 }
 
 // RequireAddon calls the Setup and Provision method on the given addon, failing
