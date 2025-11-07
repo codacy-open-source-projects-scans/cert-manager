@@ -21,6 +21,11 @@ import (
 	"testing"
 	"time"
 
+	internalinformers "github.com/cert-manager/cert-manager/internal/informers"
+	cmclient "github.com/cert-manager/cert-manager/pkg/client/clientset/versioned"
+	certmgrscheme "github.com/cert-manager/cert-manager/pkg/client/clientset/versioned/scheme"
+	cminformers "github.com/cert-manager/cert-manager/pkg/client/informers/externalversions"
+	controllerpkg "github.com/cert-manager/cert-manager/pkg/controller"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	apiext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -36,12 +41,6 @@ import (
 	apireg "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"k8s.io/kubectl/pkg/util/openapi"
 	gwapi "sigs.k8s.io/gateway-api/apis/v1"
-
-	internalinformers "github.com/cert-manager/cert-manager/internal/informers"
-	cmclient "github.com/cert-manager/cert-manager/pkg/client/clientset/versioned"
-	certmgrscheme "github.com/cert-manager/cert-manager/pkg/client/clientset/versioned/scheme"
-	cminformers "github.com/cert-manager/cert-manager/pkg/client/informers/externalversions"
-	controllerpkg "github.com/cert-manager/cert-manager/pkg/controller"
 )
 
 func NewEventRecorder(t *testing.T, scheme *runtime.Scheme) record.EventRecorder {
@@ -83,27 +82,26 @@ func StartInformersAndController(t *testing.T, factory internalinformers.KubeInf
 }
 
 func StartInformersAndControllers(t *testing.T, factory internalinformers.KubeInformerFactory, cmFactory cminformers.SharedInformerFactory, cs ...controllerpkg.Interface) StopFunc {
-	rootCtx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error)
+	// Making sure the rootCtx is canceled when StopFunc is called
+	// even when t.Context() has not been canceled yet.
+	stoppableCtx, stopCtxFn := context.WithCancel(t.Context())
 
-	factory.Start(rootCtx.Done())
-	cmFactory.Start(rootCtx.Done())
-	group, _ := errgroup.WithContext(context.Background())
+	factory.Start(stoppableCtx.Done())
+	cmFactory.Start(stoppableCtx.Done())
+	group, gctx := errgroup.WithContext(stoppableCtx)
 	go func() {
-		defer close(errCh)
 		for _, c := range cs {
 			func(c controllerpkg.Interface) {
 				group.Go(func() error {
-					return c.Run(1, rootCtx)
+					return c.Run(1, gctx)
 				})
 			}(c)
 		}
-		errCh <- group.Wait()
 	}()
+
 	return func() {
-		cancel()
-		err := <-errCh
-		if err != nil {
+		stopCtxFn()
+		if err := group.Wait(); err != nil {
 			t.Fatal(err)
 		}
 	}

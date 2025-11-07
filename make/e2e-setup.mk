@@ -24,26 +24,37 @@ CRI_ARCH := $(HOST_ARCH)
 
 # TODO: this version is also defaulted in ./make/cluster.sh. Make it so that it
 # is set in one place only.
-K8S_VERSION := 1.30
+K8S_VERSION := 1.34
 
-IMAGE_ingressnginx_amd64 := registry.k8s.io/ingress-nginx/controller:v1.10.1@sha256:959e313aceec9f38e18a329ca3756402959e84e63ae8ba7ac1ee48aec28d51b9
+IMAGE_ingressnginx_amd64 := registry.k8s.io/ingress-nginx/controller:v1.12.3@sha256:aadad8e26329d345dea3a69b8deb9f3c52899a97cbaf7e702b8dfbeae3082c15
 IMAGE_kyverno_amd64 := ghcr.io/kyverno/kyverno:v1.12.3@sha256:127def0e41f49fea6e260abf7b1662fe7bdfb9f33e8f9047fb74d0162a5697bb
 IMAGE_kyvernopre_amd64 := ghcr.io/kyverno/kyvernopre:v1.12.3@sha256:d388cd67b38fb4f55eb5e38107dbbce9e06208b8e3839f0b63f8631f286181be
 IMAGE_vault_amd64 := docker.io/hashicorp/vault:1.14.1@sha256:436d056e8e2a96c7356720069c29229970466f4f686886289dcc94dfa21d3155
-IMAGE_bind_amd64 := docker.io/ubuntu/bind9:9.18-22.04_beta@sha256:69b27585043985948fb7be88a49c44364f1cb8cfbc2626b2cfedfa2e68db50ee
+IMAGE_bind_amd64 := europe-west1-docker.pkg.dev/cert-manager-tests-trusted/cert-manager-infra-images/bind9:9.18-22.04_beta@sha256:8c45ba363b2921950161451cf3ff58dff1816fa46b16fb8fa601d5500cdc2ffc
 IMAGE_sampleexternalissuer_amd64 := ghcr.io/cert-manager/sample-external-issuer/controller:v0.4.0@sha256:964b378fe0dda7fc38ce3f211c3b24c780e44cef13c39d3206de985bad67f294
 IMAGE_projectcontour_amd64 := ghcr.io/projectcontour/contour:v1.29.1@sha256:bb7af851ac5832c315e0863d12ed583cee54c495d58a206f1d0897647505ed70
+# We use the bitnamilegacy image because Bitnami are deprecating support for
+# non-hardened, Debian-based software images in its free tier. See
+# https://github.com/bitnami/containers/issues/83267
+IMAGE_projectcontourenvoy_amd64 := docker.io/bitnamilegacy/envoy:1.29.5-debian-12-r0@sha256:34be30978b7765699c4548a393374a5fea64613352078ec49581be26c2024dec
 
-IMAGE_ingressnginx_arm64 := registry.k8s.io/ingress-nginx/controller:v1.10.1@sha256:624d1a22b56a52fc4b8e330bef968cd77d49c6eeb36166f20036d50782307341
+IMAGE_ingressnginx_arm64 := registry.k8s.io/ingress-nginx/controller:v1.12.3@sha256:800048a4cdf4ad487a17f56d22ec6be7a34248fc18900d945bc869fee4ccb2f7
 IMAGE_kyverno_arm64 := ghcr.io/kyverno/kyverno:v1.12.3@sha256:c076a1ba9e0fb33d8eca3e7499caddfa3bb4f5e52e9dee589d8476ae1688cd34
 IMAGE_kyvernopre_arm64 := ghcr.io/kyverno/kyvernopre:v1.12.3@sha256:d8d750012ed4bb46fd41d8892e92af6fb9fd212317bc23e68a2a47199646b04a
 IMAGE_vault_arm64 := docker.io/hashicorp/vault:1.14.1@sha256:27dd264f3813c71a66792191db5382f0cf9eeaf1ae91770634911facfcfe4837
-IMAGE_bind_arm64 := docker.io/ubuntu/bind9:9.18-22.04_beta@sha256:912dbb6c360e3ffecbf9b0248a856d670121db5a655173b2781c0c650a979330
+IMAGE_bind_arm64 := europe-west1-docker.pkg.dev/cert-manager-tests-trusted/cert-manager-infra-images/bind9:9.18-22.04_beta@sha256:7fcfebdfacf52fa0dee2b1ae37ebe235fe169cbc404974c396937599ca69da6f
 IMAGE_sampleexternalissuer_arm64 := ghcr.io/cert-manager/sample-external-issuer/controller:v0.4.0@sha256:bdff00089ec7581c0d12414ce5ad1c6ccf5b6cacbfb0b0804fefe5043a1cb849
 IMAGE_projectcontour_arm64 := ghcr.io/projectcontour/contour:v1.29.1@sha256:dbfec77951e123bf383a09412a51df218b716aaf3fe7b2778bb2f208ac495dc5
+# We use the bitnamilegacy image because Bitnami are deprecating support for
+# non-hardened, Debian-based software images in its free tier. See
+# https://github.com/bitnami/containers/issues/83267
+IMAGE_projectcontourenvoy_arm64 := docker.io/bitnamilegacy/envoy:1.29.5-debian-12-r0@sha256:0862aad6a034e822ef6cc0e2f2af697ec924d58b8e9acffba48be5b29a9d9776
 
-# https://github.com/letsencrypt/pebble/releases
-PEBBLE_COMMIT = ba5f81dd80fa870cbc19326f2d5a46f45f0b5ee3
+# We are using @inteon's fork of Pebble, which adds support for signing CSRs with
+# Ed25519 keys:
+# - https://github.com/letsencrypt/pebble/pull/468
+# - https://github.com/inteon/pebble/tree/add_Ed25519_support
+PEBBLE_COMMIT = 8318667fcd32f96579c45ee64c747d52519f0cdc
 
 LOCALIMAGE_pebble := local/pebble:local
 LOCALIMAGE_vaultretagged := local/vault:local
@@ -163,7 +174,7 @@ preload-kind-image: $(call image-tar,kind) | $(NEEDS_CTR)
 	$(CTR) inspect $(IMAGE_kind_$(CRI_ARCH)) 2>/dev/null >&2 || $(CTR) load -i $<
 endif
 
-LOAD_TARGETS=load-$(call image-tar,ingressnginx) load-$(call image-tar,kyverno) load-$(call image-tar,kyvernopre) load-$(call image-tar,bind) load-$(call image-tar,projectcontour) load-$(call image-tar,sampleexternalissuer) load-$(call local-image-tar,vaultretagged) load-$(call local-image-tar,pebble) load-$(call local-image-tar,samplewebhook) load-$(bin_dir)/containers/cert-manager-controller-linux-$(CRI_ARCH).tar load-$(bin_dir)/containers/cert-manager-acmesolver-linux-$(CRI_ARCH).tar load-$(bin_dir)/containers/cert-manager-cainjector-linux-$(CRI_ARCH).tar load-$(bin_dir)/containers/cert-manager-webhook-linux-$(CRI_ARCH).tar load-$(bin_dir)/containers/cert-manager-startupapicheck-linux-$(CRI_ARCH).tar
+LOAD_TARGETS=load-$(call image-tar,ingressnginx) load-$(call image-tar,kyverno) load-$(call image-tar,kyvernopre) load-$(call image-tar,bind) load-$(call image-tar,projectcontour) load-$(call image-tar,projectcontourenvoy) load-$(call image-tar,sampleexternalissuer) load-$(call local-image-tar,vaultretagged) load-$(call local-image-tar,pebble) load-$(call local-image-tar,samplewebhook) load-$(bin_dir)/containers/cert-manager-controller-linux-$(CRI_ARCH).tar load-$(bin_dir)/containers/cert-manager-acmesolver-linux-$(CRI_ARCH).tar load-$(bin_dir)/containers/cert-manager-cainjector-linux-$(CRI_ARCH).tar load-$(bin_dir)/containers/cert-manager-webhook-linux-$(CRI_ARCH).tar load-$(bin_dir)/containers/cert-manager-startupapicheck-linux-$(CRI_ARCH).tar
 .PHONY: $(LOAD_TARGETS)
 $(LOAD_TARGETS): load-%: % $(bin_dir)/scratch/kind-exists | $(NEEDS_KIND)
 	$(KIND) load image-archive --name=$(shell cat $(bin_dir)/scratch/kind-exists) $*
@@ -189,7 +200,7 @@ $(LOAD_TARGETS): load-%: % $(bin_dir)/scratch/kind-exists | $(NEEDS_KIND)
 #    tag. The rule will fail and the new digest will be printed out.
 # 3. It prevents us accidentally using the wrong digest when we pin the images
 #    in the variables above.
-$(call image-tar,vault) $(call image-tar,kyverno) $(call image-tar,kyvernopre) $(call image-tar,bind) $(call image-tar,projectcontour) $(call image-tar,sampleexternalissuer) $(call image-tar,ingressnginx): $(bin_dir)/downloaded/containers/$(CRI_ARCH)/%.tar: | $(NEEDS_CRANE)
+$(call image-tar,vault) $(call image-tar,kyverno) $(call image-tar,kyvernopre) $(call image-tar,bind) $(call image-tar,projectcontour) $(call image-tar,projectcontourenvoy) $(call image-tar,sampleexternalissuer) $(call image-tar,ingressnginx): $(bin_dir)/downloaded/containers/$(CRI_ARCH)/%.tar: | $(NEEDS_CRANE)
 	@$(eval IMAGE=$(subst +,:,$*))
 	@$(eval IMAGE_WITHOUT_DIGEST=$(shell cut -d@ -f1 <<<"$(IMAGE)"))
 	@$(eval DIGEST=$(subst $(IMAGE_WITHOUT_DIGEST)@,,$(IMAGE)))
@@ -201,7 +212,7 @@ $(call image-tar,vault) $(call image-tar,kyverno) $(call image-tar,kyvernopre) $
 #
 # This is handled differently from the other image downloads, because:
 # 1. The pinned Kind image references are automatically generated using
-#    `hack/latest-kind-image.sh`.
+#    `hack/latest-kind-images.sh`.
 # 2. It uses digests that point to the multi-arch manifest, rather than the
 #    actual image.
 # 3. The Kind image tags DO change; each new Kind release has a set of Kind node
@@ -222,7 +233,7 @@ $(call local-image-tar,vaultretagged): $(call image-tar,vault)
 	tar cf $@ -C /tmp/vault .
 	@rm -rf /tmp/vault
 
-FEATURE_GATES ?= AdditionalCertificateOutputFormats=true,ExperimentalCertificateSigningRequestControllers=true,ExperimentalGatewayAPISupport=true,ServerSideApply=true,LiteralCertificateSubject=true,UseCertificateRequestBasicConstraints=true,NameConstraints=true,OtherNames=true
+FEATURE_GATES ?= ExperimentalCertificateSigningRequestControllers=true,ExperimentalGatewayAPISupport=true,ServerSideApply=true,LiteralCertificateSubject=true,UseCertificateRequestBasicConstraints=true,NameConstraints=true,OtherNames=true
 
 ## Set this environment variable to a non empty string to cause cert-manager to
 ## be installed using best-practice configuration settings, and to install
@@ -263,9 +274,9 @@ comma = ,
 
 # Helm's "--set" interprets commas, which means we want to escape commas
 # for "--set featureGates". That's why we have "\$(comma)".
-feature_gates_controller := $(subst $(space),\$(comma),$(filter AllAlpha=% AllBeta=% AdditionalCertificateOutputFormats=% ValidateCAA=% ExperimentalCertificateSigningRequestControllers=% ExperimentalGatewayAPISupport=% ServerSideApply=% LiteralCertificateSubject=% UseCertificateRequestBasicConstraints=% NameConstraints=% SecretsFilteredCaching=% OtherNames=%, $(subst $(comma),$(space),$(FEATURE_GATES))))
-feature_gates_webhook := $(subst $(space),\$(comma),$(filter AllAlpha=% AllBeta=% AdditionalCertificateOutputFormats=% LiteralCertificateSubject=% NameConstraints=% OtherNames=%, $(subst $(comma),$(space),$(FEATURE_GATES))))
-feature_gates_cainjector := $(subst $(space),\$(comma),$(filter AllAlpha=% AllBeta=% ServerSideApply=%, $(subst $(comma),$(space),$(FEATURE_GATES))))
+feature_gates_controller := $(subst $(space),\$(comma),$(filter AllAlpha=% AllBeta=% ExperimentalCertificateSigningRequestControllers=% ExperimentalGatewayAPISupport=% ServerSideApply=% LiteralCertificateSubject=% UseCertificateRequestBasicConstraints=% NameConstraints=% SecretsFilteredCaching=% OtherNames=%, $(subst $(comma),$(space),$(FEATURE_GATES))))
+feature_gates_webhook := $(subst $(space),\$(comma),$(filter AllAlpha=% AllBeta=% LiteralCertificateSubject=% NameConstraints=% OtherNames=%, $(subst $(comma),$(space),$(FEATURE_GATES))))
+feature_gates_cainjector := $(subst $(space),\$(comma),$(filter AllAlpha=% AllBeta=% ServerSideApply=% CAInjectorMerging=%, $(subst $(comma),$(space),$(FEATURE_GATES))))
 
 # When testing an published chart the repo can be configured using
 # E2E_CERT_MANAGER_REPO
@@ -287,7 +298,7 @@ E2E_CERT_MANAGER_VERSION ?=
 
 # Install cert-manager with E2E specific images and deployment settings.
 # The values.best-practice.yaml file is applied for compliance with the
-# Kyverno policy which has been installed in a pre-requisite target.
+# Kyverno policy which has been installed in a prerequisite target.
 #
 # TODO: move these commands to separate scripts for readability
 #
@@ -362,6 +373,15 @@ e2e-setup-gatewayapi: $(bin_dir)/scratch/gateway-api-$(GATEWAY_API_VERSION).yaml
 # with ingress-shim. For the ingress controller to watch our Ingresses that
 # don't have a class, we pass a --watch-ingress-without-class flag:
 # https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml#L64-L67
+#
+# Versions of ingress-nginx >=1.8.0 support a strict-validate-path-type
+# configuration option which, when enabled, disallows . (dot) in the path value.
+# This is a bug which makes it impossible to use various legitimate URL paths,
+# including the http://<YOUR_DOMAIN>/.well-known/acme-challenge/<TOKEN> URLs
+# used for ACME HTTP01. To make matters worse, the buggy validation is enabled
+# by default in ingress-nginx >= 1.12.0.
+# We disable it by passing a `--set-string controller.config.strict-validate-path-type=false` flag.
+# https://github.com/kubernetes/ingress-nginx/issues/11176
 .PHONY: e2e-setup-ingressnginx
 e2e-setup-ingressnginx: $(call image-tar,ingressnginx) load-$(call image-tar,ingressnginx) | $(NEEDS_HELM)
 	@$(eval TAG=$(shell tar xfO $< manifest.json | jq '.[0].RepoTags[0]' -r | cut -d: -f2))
@@ -369,7 +389,7 @@ e2e-setup-ingressnginx: $(call image-tar,ingressnginx) load-$(call image-tar,ing
 	$(HELM) upgrade \
 		--install \
 		--wait \
-		--version 4.10.1 \
+		--version 4.12.3 \
 		--namespace ingress-nginx \
 		--create-namespace \
 		--set controller.image.tag=$(TAG) \
@@ -379,7 +399,8 @@ e2e-setup-ingressnginx: $(call image-tar,ingressnginx) load-$(call image-tar,ing
 		--set controller.service.clusterIP=${SERVICE_IP_PREFIX}.15 \
 		--set controller.service.type=ClusterIP \
 		--set controller.config.no-tls-redirect-locations= \
-		--set admissionWebhooks.enabled=false \
+		--set-string controller.config.strict-validate-path-type=false \
+		--set admissionWebhooks.enabled=true \
 		--set controller.admissionWebhooks.enabled=true \
 		--set controller.watchIngressWithoutClass=true \
 		ingress-nginx ingress-nginx/ingress-nginx >/dev/null
@@ -406,6 +427,10 @@ e2e-setup-kyverno: $(call image-tar,kyverno) $(call image-tar,kyvernopre) load-$
 	@$(KUBECTL) create ns cert-manager >/dev/null 2>&1 || true
 	$(KUBECTL) apply --server-side -f make/config/kyverno/policy.yaml >/dev/null
 
+# We are using @inteon's fork of Pebble, which adds support for signing CSRs with
+# Ed25519 keys:
+# - https://github.com/letsencrypt/pebble/pull/468
+# - https://github.com/inteon/pebble/tree/add_Ed25519_support
 $(bin_dir)/downloaded/pebble-$(PEBBLE_COMMIT).tar.gz: | $(bin_dir)/downloaded
 	$(CURL) https://github.com/inteon/pebble/archive/$(PEBBLE_COMMIT).tar.gz -o $@
 
@@ -458,12 +483,18 @@ e2e-setup-samplewebhook: load-$(call local-image-tar,samplewebhook) e2e-setup-ce
 		samplewebhook make/config/samplewebhook/chart >/dev/null
 
 .PHONY: e2e-setup-projectcontour
-e2e-setup-projectcontour: $(call image-tar,projectcontour) load-$(call image-tar,projectcontour) make/config/projectcontour/gateway.yaml make/config/projectcontour/contour.yaml $(bin_dir)/scratch/kind-exists | $(NEEDS_HELM) $(NEEDS_KUBECTL)
-	@$(eval TAG=$(shell tar xfO $< manifest.json | jq '.[0].RepoTags[0]' -r | cut -d: -f2))
+e2e-setup-projectcontour: $(call image-tar,projectcontour) load-$(call image-tar,projectcontour) $(call image-tar,projectcontourenvoy) load-$(call image-tar,projectcontourenvoy) make/config/projectcontour/gateway.yaml make/config/projectcontour/contour.yaml $(bin_dir)/scratch/kind-exists | $(NEEDS_HELM) $(NEEDS_KUBECTL)
+	@$(eval CONTOUR_TAG=$(shell tar xfO $< manifest.json | jq '.[0].RepoTags[0]' -r | cut -d: -f2))
+	@$(eval ENVOY_TAG=$(shell tar xfO $(call image-tar,projectcontourenvoy) manifest.json | jq '.[0].RepoTags[0]' -r | cut -d: -f2))
 	$(HELM) repo add bitnami --force-update https://charts.bitnami.com/bitnami >/dev/null
 	# Warning: When upgrading the version of this helm chart, bear in mind that the IMAGE_projectcontour_* images above might need to be updated, too.
 	# Each helm chart version in the bitnami repo corresponds to an underlying application version. Check application versions and chart versions with:
 	# $$ helm search repo bitnami -l | grep -E "contour[^-]"
+	#
+	# TODO(wallrj): The free version of the Bitnami contour chart and the
+	# associated images are deprecated. We are using the docker.io/bitnamilegacy
+	# registry as a stop gap measure until we can move to a different chart. See:
+	# https://github.com/bitnami/charts/blob/main/bitnami/contour/README.md#%EF%B8%8F-important-notice-upcoming-changes-to-the-bitnami-catalog
 	$(HELM) upgrade \
 		--install \
 		--wait \
@@ -474,13 +505,17 @@ e2e-setup-projectcontour: $(call image-tar,projectcontour) load-$(call image-tar
 		--set contour.ingressClass.default=false \
 		--set contour.image.registry=ghcr.io \
 		--set contour.image.repository=projectcontour/contour \
-		--set contour.image.tag=$(TAG) \
+		--set contour.image.tag=$(CONTOUR_TAG) \
 		--set contour.image.pullPolicy=Never \
 		--set contour.service.type=ClusterIP \
 		--set contour.service.externalTrafficPolicy="" \
 		--set envoy.service.type=ClusterIP \
 		--set envoy.service.externalTrafficPolicy="" \
 		--set envoy.service.clusterIP=${SERVICE_IP_PREFIX}.14 \
+		--set envoy.image.registry=docker.io/bitnamilegacy \
+		--set envoy.image.repository=envoy \
+		--set envoy.image.tag=$(ENVOY_TAG) \
+		--set envoy.image.pullPolicy=Never \
 		--set-file configInline=make/config/projectcontour/contour.yaml \
 		projectcontour bitnami/contour >/dev/null
 	$(KUBECTL) apply --server-side -f make/config/projectcontour/gateway.yaml

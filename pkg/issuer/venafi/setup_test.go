@@ -17,7 +17,6 @@ limitations under the License.
 package venafi
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -91,7 +90,7 @@ func TestSetup(t *testing.T) {
 			iss:           baseIssuer.DeepCopy(),
 			expectedCondition: &cmapi.IssuerCondition{
 				Reason:  "ErrorSetup",
-				Message: "Failed to setup Venafi issuer: error building client: this is an error",
+				Message: "Failed to setup Certificate Manager issuer: error building client: this is an error",
 				Status:  "False",
 			},
 		},
@@ -102,7 +101,7 @@ func TestSetup(t *testing.T) {
 			expectedErr:   true,
 			expectedCondition: &cmapi.IssuerCondition{
 				Reason:  "ErrorSetup",
-				Message: "Failed to setup Venafi issuer: error pinging Venafi API: this is a ping error",
+				Message: "Failed to setup Certificate Manager issuer: error pinging Certificate Manager: this is a ping error",
 				Status:  "False",
 			},
 		},
@@ -112,12 +111,12 @@ func TestSetup(t *testing.T) {
 			iss:           baseIssuer.DeepCopy(),
 			expectedErr:   false,
 			expectedCondition: &cmapi.IssuerCondition{
-				Message: "Venafi issuer started",
-				Reason:  "Venafi issuer started",
+				Message: "Certificate Manager issuer started",
+				Reason:  "Certificate Manager issuer started",
 				Status:  "True",
 			},
 			expectedEvents: []string{
-				"Normal Ready Verified issuer with Venafi server",
+				"Normal Ready Verified issuer with Certificate Manager server",
 			},
 		},
 		"verifyCredentials happy path": {
@@ -125,12 +124,12 @@ func TestSetup(t *testing.T) {
 			iss:           baseIssuer.DeepCopy(),
 			expectedErr:   false,
 			expectedCondition: &cmapi.IssuerCondition{
-				Message: "Venafi issuer started",
-				Reason:  "Venafi issuer started",
+				Message: "Certificate Manager issuer started",
+				Reason:  "Certificate Manager issuer started",
 				Status:  "True",
 			},
 			expectedEvents: []string{
-				"Normal Ready Verified issuer with Venafi server",
+				"Normal Ready Verified issuer with Certificate Manager server",
 			},
 		},
 
@@ -140,7 +139,7 @@ func TestSetup(t *testing.T) {
 			expectedErr:   true,
 			expectedCondition: &cmapi.IssuerCondition{
 				Reason:  "ErrorSetup",
-				Message: "Failed to setup Venafi issuer: client.VerifyCredentials: 401 Unauthorized",
+				Message: "Failed to setup Certificate Manager issuer: client.VerifyCredentials: 401 Unauthorized",
 				Status:  "False",
 			},
 		},
@@ -166,16 +165,14 @@ func (s *testSetupT) runTest(t *testing.T) {
 	rec := &controllertest.FakeRecorder{}
 
 	v := &Venafi{
-		resourceNamespace: "test-namespace",
 		Context: &controllerpkg.Context{
 			Recorder: rec,
 		},
-		issuer:        s.iss,
 		clientBuilder: s.clientBuilder,
-		log:           logf.Log.WithName("venafi"),
+		log:           logf.Log.WithName("Certificate Manager"),
 	}
 
-	err := v.Setup(context.TODO())
+	err := v.Setup(t.Context(), s.iss)
 	if err != nil && !s.expectedErr {
 		t.Errorf("expected to not get an error, but got: %v", err)
 	}

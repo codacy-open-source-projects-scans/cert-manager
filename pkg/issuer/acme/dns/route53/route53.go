@@ -19,7 +19,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
-	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
@@ -143,7 +142,7 @@ func (d *sessionProvider) GetSession(ctx context.Context) (aws.Config, error) {
 
 	cfg, err := config.LoadDefaultConfig(ctx, optFns...)
 	if err != nil {
-		return aws.Config{}, fmt.Errorf("unable to create aws config: %s", err)
+		return aws.Config{}, fmt.Errorf("unable to create aws config: %w", err)
 	}
 
 	if d.Role != "" && d.WebIdentityToken == "" {
@@ -154,7 +153,7 @@ func (d *sessionProvider) GetSession(ctx context.Context) (aws.Config, error) {
 			RoleSessionName: aws.String("cert-manager"),
 		})
 		if err != nil {
-			return aws.Config{}, fmt.Errorf("unable to assume role: %s", removeReqID(err))
+			return aws.Config{}, fmt.Errorf("unable to assume role: %w", err)
 		}
 
 		cfg.Credentials = credentials.NewStaticCredentialsProvider(
@@ -174,7 +173,7 @@ func (d *sessionProvider) GetSession(ctx context.Context) (aws.Config, error) {
 			WebIdentityToken: aws.String(d.WebIdentityToken),
 		})
 		if err != nil {
-			return aws.Config{}, fmt.Errorf("unable to assume role with web identity: %s", removeReqID(err))
+			return aws.Config{}, fmt.Errorf("unable to assume role with web identity: %w", err)
 		}
 
 		cfg.Credentials = credentials.NewStaticCredentialsProvider(
@@ -263,7 +262,7 @@ func (r *DNSProvider) changeRecord(ctx context.Context, action route53types.Chan
 	log := logf.FromContext(ctx)
 	hostedZoneID, err := r.getHostedZoneID(ctx, fqdn)
 	if err != nil {
-		return fmt.Errorf("failed to determine Route 53 hosted zone ID: %v", err)
+		return fmt.Errorf("failed to determine Route 53 hosted zone ID: %w", err)
 	}
 
 	recordSet := newTXTRecordSet(fqdn, value, ttl)
@@ -282,13 +281,18 @@ func (r *DNSProvider) changeRecord(ctx context.Context, action route53types.Chan
 
 	resp, err := r.client.ChangeResourceRecordSets(ctx, reqParams)
 	if err != nil {
-		if errors.Is(err, &route53types.InvalidChangeBatch{}) && action == route53types.ChangeActionDelete {
-			log.V(logf.DebugLevel).WithValues("error", err).Info("ignoring InvalidChangeBatch error")
-			// If we try to delete something and get a 'InvalidChangeBatch' that
-			// means it's already deleted, no need to consider it an error.
+		// If we try to delete something and get a 'InvalidChangeBatch' that
+		// means it's already deleted, no need to consider it an error.
+		var apiErr *route53types.InvalidChangeBatch
+		if errors.As(err, &apiErr) && action == route53types.ChangeActionDelete {
+			log.V(logf.DebugLevel).Info(
+				"Got InvalidChangeBatch error when attempting to delete the TXT record. "+
+					"Ignoring the error and assuming that the TXT record has already been deleted.",
+				"error", err,
+			)
 			return nil
 		}
-		return fmt.Errorf("failed to change Route 53 record set: %v", removeReqID(err))
+		return fmt.Errorf("failed to change Route 53 record set: %w", err)
 
 	}
 
@@ -300,7 +304,7 @@ func (r *DNSProvider) changeRecord(ctx context.Context, action route53types.Chan
 		}
 		resp, err := r.client.GetChange(ctx, reqParams)
 		if err != nil {
-			return false, fmt.Errorf("failed to query Route 53 change status: %v", removeReqID(err))
+			return false, fmt.Errorf("failed to query Route 53 change status: %w", err)
 		}
 		if resp.ChangeInfo.Status == route53types.ChangeStatusInsync {
 			return true, nil
@@ -316,7 +320,7 @@ func (r *DNSProvider) getHostedZoneID(ctx context.Context, fqdn string) (string,
 
 	authZone, err := util.FindZoneByFqdn(ctx, fqdn, r.dns01Nameservers)
 	if err != nil {
-		return "", fmt.Errorf("error finding zone from fqdn: %v", err)
+		return "", fmt.Errorf("error finding zone from fqdn: %w", err)
 	}
 
 	// .DNSName should not have a trailing dot
@@ -325,7 +329,7 @@ func (r *DNSProvider) getHostedZoneID(ctx context.Context, fqdn string) (string,
 	}
 	resp, err := r.client.ListHostedZonesByName(ctx, reqParams)
 	if err != nil {
-		return "", removeReqID(err)
+		return "", err
 	}
 
 	zoneToID := make(map[string]string)
@@ -364,22 +368,4 @@ func newTXTRecordSet(fqdn, value string, ttl int) *route53types.ResourceRecordSe
 			{Value: aws.String(value)},
 		},
 	}
-}
-
-// The aws-sdk-go library appends a request id to its error messages. We
-// want our error messages to be the same when the cause is the same to
-// avoid spurious challenge updates.
-//
-// This function must be called everywhere we have an error coming from
-// an aws-sdk-go func. The passed error is modified in place.
-func removeReqID(err error) error {
-	var responseError *awshttp.ResponseError
-	if errors.As(err, &responseError) {
-		before := responseError.Error()
-		// remove the request id from the error message
-		responseError.RequestID = "<REDACTED>"
-		after := responseError.Error()
-		return errors.New(strings.Replace(err.Error(), before, after, 1))
-	}
-	return err
 }

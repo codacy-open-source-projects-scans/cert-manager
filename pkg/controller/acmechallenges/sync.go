@@ -21,21 +21,23 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
-	acmeapi "golang.org/x/crypto/acme"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/digitalocean/godo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 
-	"github.com/cert-manager/cert-manager/internal/controller/feature"
 	"github.com/cert-manager/cert-manager/pkg/acme"
 	acmecl "github.com/cert-manager/cert-manager/pkg/acme/client"
 	cmacme "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
-	dnsutil "github.com/cert-manager/cert-manager/pkg/issuer/acme/dns/util"
 	logf "github.com/cert-manager/cert-manager/pkg/logs"
-	utilfeature "github.com/cert-manager/cert-manager/pkg/util/feature"
+	acmeapi "github.com/cert-manager/cert-manager/third_party/forked/acme"
 )
 
 const (
@@ -47,7 +49,7 @@ const (
 
 	// How long to wait for an authorization response from the ACME server in acceptChallenge()
 	// before giving up
-	authorizationTimeout = 20 * time.Second
+	authorizationTimeout = 2 * time.Minute
 )
 
 // solver solves ACME challenges by presenting the given token and key in an
@@ -59,7 +61,7 @@ type solver interface {
 	Check(ctx context.Context, issuer cmapi.GenericIssuer, ch *cmacme.Challenge) error
 	// CleanUp will remove challenge records for a given solver.
 	// This may involve deleting resources in the Kubernetes API Server, or
-	// communicating with other external components (e.g. DNS providers).
+	// communicating with other external components (e.g., DNS providers).
 	CleanUp(ctx context.Context, ch *cmacme.Challenge) error
 }
 
@@ -72,7 +74,7 @@ func (c *controller) Sync(ctx context.Context, chOriginal *cmacme.Challenge) (er
 
 	defer func() {
 		if updateError := c.updateObject(ctx, chOriginal, ch); updateError != nil {
-			if errors.Is(updateError, argumentError) {
+			if errors.Is(updateError, errArgument) {
 				log.Error(updateError, "If this error occurs there is a bug in cert-manager. Please report it. Not retrying.")
 				return
 			}
@@ -90,23 +92,16 @@ func (c *controller) Sync(ctx context.Context, chOriginal *cmacme.Challenge) (er
 		return nil
 	}
 
+	// Remove legacy finalizer
+	ch.Finalizers = slices.DeleteFunc(ch.Finalizers, func(finalizer string) bool {
+		return finalizer == cmacme.ACMELegacyFinalizer
+	})
+
 	// This finalizer ensures that the challenge is not garbage collected before
 	// cert-manager has a chance to clean up resources created for the
 	// challenge.
-	//
-	// API Transition
-	// -- Until UseDomainQualifiedFinalizer is active, we add cmacme.ACMELegacyFinalizer.
-	// -- When it is active we add cmacme.ACMEDomainQualifiedFinalizer instead.
-	//
-	// -- Both finalizers are supported, the flag just controls the one we add.
-	//
-	// -- We only need to add a finalizer label if no supported finalizer label is present.
 	if finalizerRequired(ch) {
-		finalizer := cmacme.ACMELegacyFinalizer
-		if utilfeature.DefaultFeatureGate.Enabled(feature.UseDomainQualifiedFinalizer) {
-			finalizer = cmacme.ACMEDomainQualifiedFinalizer
-		}
-		ch.Finalizers = append(ch.Finalizers, finalizer)
+		ch.Finalizers = append(ch.Finalizers, cmacme.ACMEDomainQualifiedFinalizer)
 		return nil
 	}
 
@@ -128,7 +123,9 @@ func (c *controller) Sync(ctx context.Context, chOriginal *cmacme.Challenge) (er
 			err = solver.CleanUp(ctx, ch)
 			if err != nil {
 				c.recorder.Eventf(ch, corev1.EventTypeWarning, reasonCleanUpError, "Error cleaning up challenge: %v", err)
-				ch.Status.Reason = err.Error()
+				// stabilize the error message to avoid spurious updates which would
+				// cause repeated reconciles
+				ch.Status.Reason = stabilizeSolverErrorMessage(err)
 				log.Error(err, "error cleaning up challenge")
 				return err
 			}
@@ -164,28 +161,6 @@ func (c *controller) Sync(ctx context.Context, chOriginal *cmacme.Challenge) (er
 		return nil
 	}
 
-	if utilfeature.DefaultFeatureGate.Enabled(feature.ValidateCAA) {
-		// check for CAA records.
-		// CAA records are static, so we don't have to present anything
-		// before we check for them.
-
-		// Find out which identity the ACME server says it will use.
-		dir, err := cl.Discover(ctx)
-		if err != nil {
-			return handleError(ctx, ch, err)
-		}
-		// TODO(dmo): figure out if missing CAA identity in directory
-		// means no CAA check is performed by ACME server or if any valid
-		// CAA would stop issuance (strongly suspect the former)
-		if len(dir.CAA) != 0 {
-			err := dnsutil.ValidateCAA(ctx, ch.Spec.DNSName, dir.CAA, ch.Spec.Wildcard, c.dns01Nameservers)
-			if err != nil {
-				ch.Status.Reason = fmt.Sprintf("CAA self-check failed: %s", err)
-				return err
-			}
-		}
-	}
-
 	solver, err := c.solverFor(ch.Spec.Type)
 	if err != nil {
 		return err
@@ -195,7 +170,9 @@ func (c *controller) Sync(ctx context.Context, chOriginal *cmacme.Challenge) (er
 		err := solver.Present(ctx, genericIssuer, ch)
 		if err != nil {
 			c.recorder.Eventf(ch, corev1.EventTypeWarning, reasonPresentError, "Error presenting challenge: %v", err)
-			ch.Status.Reason = err.Error()
+			// stabilize the error message to avoid spurious updates which would
+			// cause repeated reconciles
+			ch.Status.Reason = stabilizeSolverErrorMessage(err)
 			return err
 		}
 
@@ -222,6 +199,72 @@ func (c *controller) Sync(ctx context.Context, chOriginal *cmacme.Challenge) (er
 	}
 
 	return nil
+}
+
+// stabilizeSolverErrorMessage will attempt to remove any unique IDs from the given
+// error message so that it can be assigned to the Challenge.Status.Reason
+// field without causing spurious updates.
+//
+// For example,
+// - Azure SDK returns the contents of the HTTP requests in its error messages.
+// - AWS SDK adds request UIDs to its error messages.
+// - DigitalOcean SDK adds request UIDs to its error messages.
+//
+// TODO(wallrj): Ideally this would not be necessary. It should be possible to
+// add the unique error message to the status without triggering another
+// reconcile.
+//
+// TODO(wallrj): This won't work if one of the unstable errors is wrapped inside
+// another unstable error, because we only unwrap the first instance and the
+// strings.ReplaceAll calls won't find it. At time of wriging none of the DNS
+// SDKs returns nested unstable errors, so we do not expect this to be a problem
+// in practice.
+func stabilizeSolverErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	fullMessage := err.Error()
+	{
+		var target *awshttp.ResponseError
+		if errors.As(err, &target) {
+			fullMessage = strings.ReplaceAll(
+				fullMessage,
+				target.Error(),
+				"<redacted AWS SDK error: http.ResponseError: see events and logs for details>",
+			)
+		}
+	}
+	{
+		var target *azidentity.AuthenticationFailedError
+		if errors.As(err, &target) {
+			fullMessage = strings.ReplaceAll(
+				fullMessage,
+				target.Error(),
+				"<redacted Azure SDK error: azidentity.AuthenticationFailedError: see events and logs for details>",
+			)
+		}
+	}
+	{
+		var target *azcore.ResponseError
+		if errors.As(err, &target) {
+			fullMessage = strings.ReplaceAll(
+				fullMessage,
+				target.Error(),
+				"<redacted Azure SDK error: azcore.ResponseError: see events and logs for details>",
+			)
+		}
+	}
+	{
+		var target *godo.ErrorResponse
+		if errors.As(err, &target) {
+			fullMessage = strings.ReplaceAll(
+				fullMessage,
+				target.Error(),
+				"<redacted DigitalOcean SDK error: godo.ErrorResponse: see events and logs for details>",
+			)
+		}
+	}
+	return fullMessage
 }
 
 // handleError will handle ACME error types, updating the challenge resource
@@ -277,7 +320,7 @@ func (c *controller) handleFinalizer(ctx context.Context, ch *cmacme.Challenge) 
 	defer func() {
 		// call Update to remove the metadata.finalizers entry
 		ch.Finalizers = slices.DeleteFunc(ch.Finalizers, func(finalizer string) bool {
-			return finalizer == cmacme.ACMELegacyFinalizer || finalizer == cmacme.ACMEDomainQualifiedFinalizer
+			return finalizer == cmacme.ACMEDomainQualifiedFinalizer || finalizer == cmacme.ACMELegacyFinalizer
 		})
 	}()
 
@@ -294,7 +337,9 @@ func (c *controller) handleFinalizer(ctx context.Context, ch *cmacme.Challenge) 
 	err = solver.CleanUp(ctx, ch)
 	if err != nil {
 		c.recorder.Eventf(ch, corev1.EventTypeWarning, reasonCleanUpError, "Error cleaning up challenge: %v", err)
-		ch.Status.Reason = err.Error()
+		// stabilize the error message to avoid spurious updates which would
+		// cause repeated reconciles
+		ch.Status.Reason = stabilizeSolverErrorMessage(err)
 		log.Error(err, "error cleaning up challenge")
 		return nil
 	}

@@ -46,6 +46,14 @@ const (
 	//
 	// ServerSideApply enables the use of ServerSideApply in all API calls.
 	ServerSideApply featuregate.Feature = "ServerSideApply"
+
+	// Owner: @ThatsMrTalbot
+	// Alpha: v1.17
+	// Beta: v1.19
+	//
+	// CAInjectorMerging changes the ca-injector to merge new certs in instead
+	// of replacing them outright.
+	CAInjectorMerging featuregate.Feature = "CAInjectorMerging"
 )
 
 func init() {
@@ -60,5 +68,6 @@ func init() {
 //
 // Where utilfeature is github.com/cert-manager/cert-manager/pkg/util/feature.
 var cainjectorFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
-	ServerSideApply: {Default: false, PreRelease: featuregate.Alpha},
+	ServerSideApply:   {Default: false, PreRelease: featuregate.Alpha},
+	CAInjectorMerging: {Default: true, PreRelease: featuregate.Beta},
 }

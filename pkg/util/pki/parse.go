@@ -31,7 +31,7 @@ func DecodePrivateKeyBytes(keyBytes []byte) (crypto.Signer, error) {
 	// decode the private key pem
 	block, _, err := pem.SafeDecodePrivateKey(keyBytes)
 	if err != nil {
-		return nil, errors.NewInvalidData("error decoding private key PEM block")
+		return nil, errors.NewInvalidData("error decoding private key PEM block: %s", err.Error())
 	}
 
 	switch block.Type {
@@ -69,13 +69,7 @@ func DecodePrivateKeyBytes(keyBytes []byte) (crypto.Signer, error) {
 	}
 }
 
-// DecodeX509CertificateChainBytes will decode a PEM encoded x509 Certificate chain.
-func DecodeX509CertificateChainBytes(certBytes []byte) ([]*x509.Certificate, error) {
-	return DecodeX509CertificateSetBytes(certBytes)
-}
-
-// DecodeX509CertificateSetBytes will decode a concatenated set of PEM encoded x509 Certificates.
-func DecodeX509CertificateSetBytes(certBytes []byte) ([]*x509.Certificate, error) {
+func decodeMultipleCerts(certBytes []byte, decodeFn func([]byte) (*stdpem.Block, []byte, error)) ([]*x509.Certificate, error) {
 	certs := []*x509.Certificate{}
 
 	var block *stdpem.Block
@@ -84,7 +78,7 @@ func DecodeX509CertificateSetBytes(certBytes []byte) ([]*x509.Certificate, error
 		var err error
 
 		// decode the tls certificate pem
-		block, certBytes, err = pem.SafeDecodeMultipleCertificates(certBytes)
+		block, certBytes, err = decodeFn(certBytes)
 		if err != nil {
 			if err == pem.ErrNoPEMData {
 				break
@@ -96,16 +90,31 @@ func DecodeX509CertificateSetBytes(certBytes []byte) ([]*x509.Certificate, error
 		// parse the tls certificate
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			return nil, errors.NewInvalidData("error parsing TLS certificate: %s", err.Error())
+			return nil, errors.NewInvalidData("error parsing X.509 certificate: %s", err.Error())
 		}
+
 		certs = append(certs, cert)
 	}
 
 	if len(certs) == 0 {
-		return nil, errors.NewInvalidData("error decoding certificate PEM block")
+		return nil, errors.NewInvalidData("error decoding certificate PEM block: no valid certificates found")
 	}
 
 	return certs, nil
+}
+
+// DecodeX509CertificateChainBytes will decode a PEM encoded x509 Certificate chain with a tight
+// size limit to reduce the risk of DoS attacks. If you need to decode many certificates, use
+// DecodeX509CertificateSetBytes instead.
+func DecodeX509CertificateChainBytes(certBytes []byte) ([]*x509.Certificate, error) {
+	return decodeMultipleCerts(certBytes, pem.SafeDecodeCertificateChain)
+}
+
+// DecodeX509CertificateSetBytes will decode a concatenated set of PEM encoded x509 Certificates,
+// with generous size limits to enable parsing of TLS trust bundles.
+// If you need to decode a single certificate chain, use DecodeX509CertificateChainBytes instead.
+func DecodeX509CertificateSetBytes(certBytes []byte) ([]*x509.Certificate, error) {
+	return decodeMultipleCerts(certBytes, pem.SafeDecodeCertificateBundle)
 }
 
 // DecodeX509CertificateBytes will decode a PEM encoded x509 Certificate.
@@ -122,7 +131,7 @@ func DecodeX509CertificateBytes(certBytes []byte) (*x509.Certificate, error) {
 func DecodeX509CertificateRequestBytes(csrBytes []byte) (*x509.CertificateRequest, error) {
 	block, _, err := pem.SafeDecodeCSR(csrBytes)
 	if err != nil {
-		return nil, errors.NewInvalidData("error decoding certificate request PEM block")
+		return nil, errors.NewInvalidData("error decoding certificate request PEM block: %s", err)
 	}
 
 	csr, err := x509.ParseCertificateRequest(block.Bytes)

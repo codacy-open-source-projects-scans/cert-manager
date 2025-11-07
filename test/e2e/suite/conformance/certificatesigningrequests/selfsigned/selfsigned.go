@@ -22,16 +22,16 @@ import (
 	"fmt"
 	"time"
 
+	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	experimentalapi "github.com/cert-manager/cert-manager/pkg/apis/experimental/v1alpha1"
+	"github.com/cert-manager/cert-manager/pkg/controller/certificatesigningrequests/util"
+	"github.com/cert-manager/cert-manager/pkg/util/pki"
 	certificatesv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cert-manager/cert-manager/e2e-tests/framework"
 	"github.com/cert-manager/cert-manager/e2e-tests/suite/conformance/certificatesigningrequests"
-	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
-	experimentalapi "github.com/cert-manager/cert-manager/pkg/apis/experimental/v1alpha1"
-	"github.com/cert-manager/cert-manager/pkg/controller/certificatesigningrequests/util"
-	"github.com/cert-manager/cert-manager/pkg/util/pki"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -106,7 +106,7 @@ func createSelfSignedIssuer(ctx context.Context, f *framework.Framework) string 
 			},
 		},
 	}, metav1.CreateOptions{})
-	Expect(err).NotTo(HaveOccurred(), "failed to create self signed issuer")
+	Expect(err).NotTo(HaveOccurred(), "failed to create self-signed issuer")
 
 	// wait for issuer to be ready
 	By("Waiting for Self Signed Issuer to be Ready")
@@ -129,7 +129,7 @@ func createSelfSignedClusterIssuer(ctx context.Context, f *framework.Framework) 
 			},
 		},
 	}, metav1.CreateOptions{})
-	Expect(err).NotTo(HaveOccurred(), "failed to create self signed issuer")
+	Expect(err).NotTo(HaveOccurred(), "failed to create self-signed issuer")
 
 	// wait for issuer to be ready
 	By("Waiting for Self Signed Cluster Issuer to be Ready")

@@ -11,6 +11,7 @@ package azuredns
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,14 +22,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	dns "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/dns/armdns"
+	logrtesting "github.com/go-logr/logr/testing"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/util/rand"
 
 	v1 "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
 	"github.com/cert-manager/cert-manager/pkg/issuer/acme/dns/util"
@@ -58,6 +58,55 @@ func init() {
 	}
 }
 
+type fakePublicZonesClient struct {
+	zones map[string]dns.Zone
+}
+
+func newFakePublicZonesClient(zones map[string]dns.Zone) ZonesClient {
+	return &fakePublicZonesClient{zones: zones}
+}
+
+func (fpz *fakePublicZonesClient) Get(ctx context.Context, resourceGroupName string, zoneName string, options *ClientOptions) error {
+	_, ok := fpz.zones[zoneName]
+	if !ok {
+		return errors.New("no zone found")
+	}
+
+	return nil
+}
+
+type fakePublicRecordsClient struct {
+	records map[string]RecordSet
+}
+
+func newFakeRecordSetsClient(records map[string]RecordSet) RecordsClient {
+	return &fakePublicRecordsClient{records: records}
+}
+
+func (fpr *fakePublicRecordsClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, zoneName string, relativeRecordSetName string, set RecordSet, options *ClientOptions) (RecordSet, error) {
+	key := fmt.Sprintf("%s.%s", relativeRecordSetName, zoneName)
+	fpr.records[key] = set
+	return set, nil
+}
+
+func (fpr *fakePublicRecordsClient) Get(ctx context.Context, resourceGroupName string, zoneName string, relativeRecordSetName string, options *ClientOptions) (RecordSet, error) {
+	key := fmt.Sprintf("%s.%s", relativeRecordSetName, zoneName)
+	r, ok := fpr.records[key]
+	if !ok {
+		return nil, errors.New("no record found")
+	}
+
+	return r, nil
+}
+
+func (fpr *fakePublicRecordsClient) Delete(ctx context.Context, resourceGroupName string, zoneName string, relativeRecordSetName string, options *ClientOptions) error {
+	if len(fpr.records) == 0 {
+		return nil
+	}
+	delete(fpr.records, fmt.Sprintf("%s.%s", relativeRecordSetName, zoneName))
+	return nil
+}
+
 func TestLiveAzureDnsPresent(t *testing.T) {
 	if !azureLiveTest {
 		t.Skip("skipping live test")
@@ -65,7 +114,7 @@ func TestLiveAzureDnsPresent(t *testing.T) {
 	provider, err := NewDNSProviderCredentials("", azureClientID, azureClientSecret, azuresubscriptionID, azureTenantID, azureResourceGroupName, azureHostedZoneName, util.RecursiveNameservers, false, &v1.AzureManagedIdentity{})
 	assert.NoError(t, err)
 
-	err = provider.Present(context.TODO(), azureDomain, "_acme-challenge."+azureDomain+".", "123d==")
+	err = provider.Present(t.Context(), azureDomain, "_acme-challenge."+azureDomain+".", "123d==")
 	assert.NoError(t, err)
 }
 
@@ -76,9 +125,9 @@ func TestLiveAzureDnsPresentMultiple(t *testing.T) {
 	provider, err := NewDNSProviderCredentials("", azureClientID, azureClientSecret, azuresubscriptionID, azureTenantID, azureResourceGroupName, azureHostedZoneName, util.RecursiveNameservers, false, &v1.AzureManagedIdentity{})
 	assert.NoError(t, err)
 
-	err = provider.Present(context.TODO(), azureDomain, "_acme-challenge."+azureDomain+".", "123d==")
+	err = provider.Present(t.Context(), azureDomain, "_acme-challenge."+azureDomain+".", "123d==")
 	assert.NoError(t, err)
-	err = provider.Present(context.TODO(), azureDomain, "_acme-challenge."+azureDomain+".", "1123d==")
+	err = provider.Present(t.Context(), azureDomain, "_acme-challenge."+azureDomain+".", "1123d==")
 	assert.NoError(t, err)
 }
 
@@ -92,7 +141,7 @@ func TestLiveAzureDnsCleanUp(t *testing.T) {
 	provider, err := NewDNSProviderCredentials("", azureClientID, azureClientSecret, azuresubscriptionID, azureTenantID, azureResourceGroupName, azureHostedZoneName, util.RecursiveNameservers, false, &v1.AzureManagedIdentity{})
 	assert.NoError(t, err)
 
-	err = provider.CleanUp(context.TODO(), azureDomain, "_acme-challenge."+azureDomain+".", "123d==")
+	err = provider.CleanUp(t.Context(), azureDomain, "_acme-challenge."+azureDomain+".", "123d==")
 	assert.NoError(t, err)
 }
 
@@ -106,9 +155,9 @@ func TestLiveAzureDnsCleanUpMultiple(t *testing.T) {
 	provider, err := NewDNSProviderCredentials("", azureClientID, azureClientSecret, azuresubscriptionID, azureTenantID, azureResourceGroupName, azureHostedZoneName, util.RecursiveNameservers, false, &v1.AzureManagedIdentity{})
 	assert.NoError(t, err)
 
-	err = provider.CleanUp(context.TODO(), azureDomain, "_acme-challenge."+azureDomain+".", "123d==")
+	err = provider.CleanUp(t.Context(), azureDomain, "_acme-challenge."+azureDomain+".", "123d==")
 	assert.NoError(t, err)
-	err = provider.CleanUp(context.TODO(), azureDomain, "_acme-challenge."+azureDomain+".", "1123d==")
+	err = provider.CleanUp(t.Context(), azureDomain, "_acme-challenge."+azureDomain+".", "1123d==")
 	assert.NoError(t, err)
 }
 
@@ -132,10 +181,10 @@ func TestAuthenticationError(t *testing.T) {
 	provider, err := NewDNSProviderCredentials("", "invalid-client-id", "invalid-client-secret", "subid", "tenid", "rg", "example.com", util.RecursiveNameservers, false, &v1.AzureManagedIdentity{})
 	assert.NoError(t, err)
 
-	err = provider.Present(context.TODO(), "example.com", "_acme-challenge.example.com.", "123d==")
+	err = provider.Present(t.Context(), "example.com", "_acme-challenge.example.com.", "123d==")
 	assert.Error(t, err)
 
-	err = provider.CleanUp(context.TODO(), "example.com", "_acme-challenge.example.com.", "123d==")
+	err = provider.CleanUp(t.Context(), "example.com", "_acme-challenge.example.com.", "123d==")
 	assert.Error(t, err)
 }
 
@@ -158,11 +207,10 @@ func populateFederatedToken(t *testing.T, filename string, content string) {
 
 func TestGetAuthorizationFederatedSPT(t *testing.T) {
 	// Create a file that will be used to store a federated token
-	f, err := os.CreateTemp("", "")
+	f, err := os.CreateTemp(t.TempDir(), "")
 	if err != nil {
 		assert.FailNow(t, err.Error())
 	}
-	defer os.Remove(f.Name())
 
 	// Close the file to simplify logic within populateFederatedToken helper
 	if err := f.Close(); err != nil {
@@ -201,14 +249,14 @@ func TestGetAuthorizationFederatedSPT(t *testing.T) {
 		}
 
 		ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasSuffix(r.RequestURI, "/.well-known/openid-configuration") {
-				tenantURL := strings.TrimSuffix("https://"+r.Host+r.RequestURI, "/.well-known/openid-configuration")
+			if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
+				tenantURL := strings.TrimSuffix("https://"+r.Host+r.URL.Path, "/.well-known/openid-configuration")
 
 				w.Header().Set("Content-Type", "application/json")
 				openidConfiguration := map[string]string{
 					"token_endpoint":         tenantURL + "/oauth2/token",
 					"authorization_endpoint": tenantURL + "/oauth2/authorize",
-					"issuer":                 "https://fakeIssuer.com",
+					"issuer":                 tenantURL + "/adfs/",
 				}
 
 				if err := json.NewEncoder(w).Encode(openidConfiguration); err != nil {
@@ -224,8 +272,11 @@ func TestGetAuthorizationFederatedSPT(t *testing.T) {
 
 			w.Header().Set("Content-Type", "application/json")
 			receivedFederatedToken := r.FormValue("client_assertion")
-			accessToken := map[string]string{
+			accessToken := map[string]any{
 				"access_token": tokens[receivedFederatedToken],
+				// the Azure SDK will not use tokens that are within 5 minutes of their expiration
+				// so "expires_on": time.Now().Add(4 * time.Minute) would work too
+				"expires_on": time.Now().Add(-1 * time.Second),
 			}
 
 			if err := json.NewEncoder(w).Encode(accessToken); err != nil {
@@ -251,16 +302,21 @@ func TestGetAuthorizationFederatedSPT(t *testing.T) {
 
 		for federatedToken, accessToken := range tokens {
 			populateFederatedToken(t, f.Name(), federatedToken)
-			token, err := spt.GetToken(context.TODO(), policy.TokenRequestOptions{Scopes: []string{"test"}})
+			token, err := spt.GetToken(t.Context(), policy.TokenRequestOptions{Scopes: []string{"test"}})
 			assert.NoError(t, err)
 			assert.Equal(t, accessToken, token.Token, "Access token should have been set to a value returned by the webserver")
 
-			// Overwrite the expires field to force the token to be re-read.
-			newExpires := time.Now().Add(-1 * time.Second)
-			v := reflect.ValueOf(spt.(*azidentity.WorkloadIdentityCredential)).Elem()
-			expiresField := v.FieldByName("expires")
-			reflect.NewAt(expiresField.Type(), expiresField.Addr().UnsafePointer()).
-				Elem().Set(reflect.ValueOf(newExpires))
+			// Overwrite the expires field to force the token to be re-read from disk.
+			// Also, we set expires_on such that the token we got from the API has expired
+			// already too.
+			expiresField := reflect.
+				ValueOf(spt.(*azidentity.WorkloadIdentityCredential)).
+				Elem().
+				FieldByName("expires")
+			reflect.
+				NewAt(expiresField.Type(), expiresField.Addr().UnsafePointer()).
+				Elem().
+				Set(reflect.ValueOf(time.Now().Add(-1 * time.Second)))
 		}
 	})
 
@@ -268,14 +324,14 @@ func TestGetAuthorizationFederatedSPT(t *testing.T) {
 		managedIdentity := &v1.AzureManagedIdentity{ClientID: "anotherClientID"}
 
 		ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasSuffix(r.RequestURI, "/.well-known/openid-configuration") {
-				tenantURL := strings.TrimSuffix("https://"+r.Host+r.RequestURI, "/.well-known/openid-configuration")
+			if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
+				tenantURL := strings.TrimSuffix("https://"+r.Host+r.URL.Path, "/.well-known/openid-configuration")
 
 				w.Header().Set("Content-Type", "application/json")
 				openidConfiguration := map[string]string{
 					"token_endpoint":         tenantURL + "/oauth2/token",
 					"authorization_endpoint": tenantURL + "/oauth2/authorize",
-					"issuer":                 "https://fakeIssuer.com",
+					"issuer":                 tenantURL + "/adfs/",
 				}
 
 				if err := json.NewEncoder(w).Encode(openidConfiguration); err != nil {
@@ -290,8 +346,9 @@ func TestGetAuthorizationFederatedSPT(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			accessToken := map[string]string{
+			accessToken := map[string]any{
 				"access_token": "abc",
+				"expires_in":   500,
 			}
 
 			if err := json.NewEncoder(w).Encode(accessToken); err != nil {
@@ -313,113 +370,116 @@ func TestGetAuthorizationFederatedSPT(t *testing.T) {
 		spt, err := getAuthorization(clientOpt, "", "", "", ambient, managedIdentity)
 		assert.NoError(t, err)
 
-		token, err := spt.GetToken(context.TODO(), policy.TokenRequestOptions{Scopes: []string{"test"}})
+		token, err := spt.GetToken(t.Context(), policy.TokenRequestOptions{Scopes: []string{"test"}})
 		assert.NoError(t, err)
 		assert.NotEmpty(t, token.Token, "Access token should have been set to a value returned by the webserver")
 	})
-
-	// This test tests the stabilizeError function, it makes sure that authentication errors
-	// are also made stable. We want our error messages to be the same when the cause
-	// is the same to avoid spurious challenge updates.
-	// Specifically, this test makes sure that the errors of type AuthenticationFailedError
-	// are made stable. These errors are returned by the recordClient and zoneClient when
-	// they fail to authenticate. We simulate this by calling the GetToken function and
-	// returning a 502 Bad Gateway error.
-	t.Run("errors should be made stable", func(t *testing.T) {
-		managedIdentity := &v1.AzureManagedIdentity{ClientID: "anotherClientID"}
-
-		ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasSuffix(r.RequestURI, "/.well-known/openid-configuration") {
-				tenantURL := strings.TrimSuffix("https://"+r.Host+r.RequestURI, "/.well-known/openid-configuration")
-
-				w.Header().Set("Content-Type", "application/json")
-				openidConfiguration := map[string]string{
-					"token_endpoint":         tenantURL + "/oauth2/token",
-					"authorization_endpoint": tenantURL + "/oauth2/authorize",
-					"issuer":                 "https://fakeIssuer.com",
-				}
-
-				if err := json.NewEncoder(w).Encode(openidConfiguration); err != nil {
-					assert.FailNow(t, err.Error())
-				}
-
-				return
-			}
-
-			w.WriteHeader(http.StatusBadGateway)
-			randomMessage := "test error message: " + rand.String(10)
-			payload := fmt.Sprintf(`{"error":{"code":"TEST_ERROR_CODE","message":"%s"}}`, randomMessage)
-			if _, err := w.Write([]byte(payload)); err != nil {
-				assert.FailNow(t, err.Error())
-			}
-		}))
-		defer ts.Close()
-
-		ambient := true
-		clientOpt := policy.ClientOptions{
-			Cloud:     cloud.Configuration{ActiveDirectoryAuthorityHost: ts.URL},
-			Transport: ts.Client(),
-		}
-
-		spt, err := getAuthorization(clientOpt, "", "", "", ambient, managedIdentity)
-		assert.NoError(t, err)
-
-		_, err = spt.GetToken(context.TODO(), policy.TokenRequestOptions{Scopes: []string{"test"}})
-		err = stabilizeError(err)
-		assert.Error(t, err)
-		assert.ErrorContains(t, err, fmt.Sprintf(`authentication failed:
-POST %s/adfs/oauth2/token
---------------------------------------------------------------------------------
-RESPONSE 502 Bad Gateway
---------------------------------------------------------------------------------
-see logs for more information`, ts.URL))
-	})
 }
 
-// TestStabilizeResponseError tests that the ResponseError errors returned by the AzureDNS API are
-// changed to be stable. We want our error messages to be the same when the cause
-// is the same to avoid spurious challenge updates.
-func TestStabilizeResponseError(t *testing.T) {
-	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-		randomMessage := "test error message: " + rand.String(10)
-		payload := fmt.Sprintf(`{"error":{"code":"TEST_ERROR_CODE","message":"%s"}}`, randomMessage)
-		if _, err := w.Write([]byte(payload)); err != nil {
-			assert.FailNow(t, err.Error())
-		}
-	}))
-
-	defer ts.Close()
-
-	clientOpt := policy.ClientOptions{
-		Cloud: cloud.Configuration{
-			ActiveDirectoryAuthorityHost: ts.URL,
-			Services: map[cloud.ServiceName]cloud.ServiceConfiguration{
-				cloud.ResourceManager: {
-					Audience: ts.URL,
-					Endpoint: ts.URL,
-				},
-			},
+func TestMockAzurePublicDNSPresent(t *testing.T) {
+	tests := []struct {
+		name               string
+		domain             string
+		relativeRecordName string
+		fqdn               string
+		value              string
+		expectError        bool
+	}{
+		{
+			name:               "Present challenge in public zone",
+			domain:             "test.internal.example.com",
+			relativeRecordName: "_acme-challenge",
+			fqdn:               "_acme-challenge.test.internal.example.com",
+			value:              "validation-token-123",
+			expectError:        false,
 		},
-		Transport: ts.Client(),
 	}
 
-	zc, err := dns.NewZonesClient("subscriptionID", nil, &arm.ClientOptions{ClientOptions: clientOpt})
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pzc := newFakePublicZonesClient(map[string]dns.Zone{
+				tt.domain: {Name: &tt.domain},
+			})
+			recordSets := map[string]RecordSet{
+				tt.fqdn: &PublicTXTRecordSet{
+					RS: &dns.RecordSet{
+						Name: &tt.fqdn,
+						Etag: new(string),
+						Properties: &dns.RecordSetProperties{
+							TxtRecords: make([]*dns.TxtRecord, 0),
+						},
+					},
+				},
+			}
+			prc := newFakeRecordSetsClient(recordSets)
+			provider := &DNSProvider{
+				recordClient:      prc,
+				zoneClient:        pzc,
+				resourceGroupName: "test-rg",
+				zoneName:          "internal.example.com",
+				log:               logrtesting.NewTestLogger(t),
+			}
 
-	dnsProvider := DNSProvider{
-		dns01Nameservers:  util.RecursiveNameservers,
-		resourceGroupName: "resourceGroupName",
-		zoneClient:        zc,
+			err := provider.Present(t.Context(), tt.domain, tt.fqdn, tt.value)
+			assert.NoError(t, err)
+			val := *(recordSets[tt.fqdn].GetTXTRecords()[0][0])
+			assert.Equal(t, tt.value, val)
+		})
+	}
+}
+
+func TestMockAzurePublicDNSCleanUp(t *testing.T) {
+	tests := []struct {
+		name               string
+		domain             string
+		relativeRecordName string
+		fqdn               string
+		value              string
+		expectError        bool
+	}{
+		{
+			name:               "Cleanup entry in public zone",
+			domain:             "test.internal.example.com",
+			relativeRecordName: "_acme-challenge",
+			fqdn:               "_acme-challenge.test.internal.example.com",
+			value:              "validation-token-123",
+			expectError:        false,
+		},
 	}
 
-	err = dnsProvider.Present(context.TODO(), "test.com", "fqdn.test.com.", "test123")
-	require.Error(t, err)
-	require.ErrorContains(t, err, fmt.Sprintf(`Zone test.com. not found in AzureDNS for domain fqdn.test.com.. Err: request error:
-GET %s/subscriptions/subscriptionID/resourceGroups/resourceGroupName/providers/Microsoft.Network/dnsZones/test.com
---------------------------------------------------------------------------------
-RESPONSE 502 Bad Gateway
-ERROR CODE: TEST_ERROR_CODE
---------------------------------------------------------------------------------
-see logs for more information`, ts.URL))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pzc := newFakePublicZonesClient(map[string]dns.Zone{
+				tt.domain: {Name: &tt.domain},
+			})
+			recordSets := map[string]RecordSet{
+				tt.fqdn: &PublicTXTRecordSet{
+					RS: &dns.RecordSet{
+						Name: &tt.fqdn,
+						Etag: to.Ptr("etag-123"),
+						Properties: &dns.RecordSetProperties{
+							TxtRecords: []*dns.TxtRecord{
+								{
+									Value: []*string{to.Ptr("validation-token-123")},
+								},
+							},
+						},
+					},
+				},
+			}
+			prc := newFakeRecordSetsClient(recordSets)
+			provider := &DNSProvider{
+				recordClient:      prc,
+				zoneClient:        pzc,
+				resourceGroupName: "test-rg",
+				zoneName:          "internal.example.com",
+				log:               logrtesting.NewTestLogger(t),
+			}
+
+			assert.Equal(t, len(recordSets[tt.fqdn].GetTXTRecords()), 1)
+			err := provider.CleanUp(t.Context(), tt.domain, tt.fqdn, tt.value)
+			assert.NoError(t, err)
+			assert.Equal(t, len(recordSets), 0)
+		})
+	}
 }

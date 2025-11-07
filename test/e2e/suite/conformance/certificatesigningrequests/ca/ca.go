@@ -24,14 +24,14 @@ import (
 	"math/big"
 	"time"
 
+	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	"github.com/cert-manager/cert-manager/pkg/controller/certificatesigningrequests/util"
+	"github.com/cert-manager/cert-manager/pkg/util/pki"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cert-manager/cert-manager/e2e-tests/framework"
 	"github.com/cert-manager/cert-manager/e2e-tests/suite/conformance/certificatesigningrequests"
-	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
-	"github.com/cert-manager/cert-manager/pkg/controller/certificatesigningrequests/util"
-	"github.com/cert-manager/cert-manager/pkg/util/pki"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -132,7 +132,6 @@ func newSigningKeypairSecret(name string) *corev1.Secret {
 	Expect(err).NotTo(HaveOccurred())
 
 	tmpl := &x509.Certificate{
-		Version:               3,
 		BasicConstraintsValid: true,
 		SerialNumber:          big.NewInt(0),
 		Subject: pkix.Name{

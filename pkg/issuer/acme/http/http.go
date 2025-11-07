@@ -168,7 +168,7 @@ func (s *Solver) Check(ctx context.Context, issuer v1.GenericIssuer, ch *cmacme.
 	ctx = logf.NewContext(ctx, log)
 
 	log.V(logf.DebugLevel).Info("running self check multiple times to ensure challenge has propagated", "required_passes", s.requiredPasses)
-	for i := 0; i < s.requiredPasses; i++ {
+	for i := range s.requiredPasses {
 		err := s.testReachability(ctx, url, ch.Spec.Key, s.HTTP01SolverNameservers, s.Context.RESTConfig.UserAgent)
 		if err != nil {
 			return err
@@ -266,7 +266,7 @@ func testReachability(ctx context.Context, url *url.URL, key string, dnsServers 
 			// > When redirected to an HTTPS URL, it does not validate certificates (since
 			// > this challenge is intended to bootstrap valid certificates, it may encounter
 			// > self-signed or expired certificates along the way).
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: true, // #nosec G402 -- false positive
 		},
 	}
 

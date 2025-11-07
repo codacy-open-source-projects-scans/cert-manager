@@ -41,12 +41,13 @@ import (
 )
 
 const (
-	tppUsernameKey    = "username"
-	tppPasswordKey    = "password"
-	tppAccessTokenKey = "access-token"
-	// Setting ClientId & Scope statically for simplicity
-	tppClientId = "cert-manager.io"
-	tppScopes   = "certificate:manage"
+	tppUsernameKey     = "username"
+	tppPasswordKey     = "password"
+	tppAccessTokenKey  = "access-token"
+	tppClientIdKey     = "client-id"
+	defaultTppClientId = "cert-manager.io"
+	// Setting Scope statically for simplicity
+	tppScopes = "certificate:manage"
 
 	defaultAPIKeyKey = "api-key"
 )
@@ -108,7 +109,7 @@ func New(namespace string, secretsLister internalinformers.SecretLister, issuer 
 	// has been created.
 	vcertClient, err := vcert.NewClient(cfg, false)
 	if err != nil {
-		return nil, fmt.Errorf("error creating Venafi client: %s", err.Error())
+		return nil, fmt.Errorf("error creating vcert client: %s", err.Error())
 	}
 
 	var tppc *tpp.Connector
@@ -125,9 +126,11 @@ func New(namespace string, secretsLister internalinformers.SecretLister, issuer 
 		if ok {
 			cc = c
 		}
+	default:
+		return nil, fmt.Errorf("unsupported vcert connector type: %v", vcertClient.GetType())
 	}
 
-	instrumentedVCertClient := newInstumentedConnector(vcertClient, metrics, logger)
+	instrumentedVCertClient := newInstrumentedConnector(vcertClient, metrics, logger)
 
 	v := &Venafi{
 		namespace:     namespace,
@@ -150,11 +153,11 @@ func New(namespace string, secretsLister internalinformers.SecretLister, issuer 
 // configForIssuer will convert a cert-manager Venafi issuer into a vcert.Config
 // that can be used to instantiate an API client.
 func configForIssuer(iss cmapi.GenericIssuer, secretsLister internalinformers.SecretLister, namespace string, userAgent string) (*vcert.Config, error) {
-	venCfg := iss.GetSpec().Venafi
+	venaCfg := iss.GetSpec().Venafi
 
 	switch {
-	case venCfg.TPP != nil:
-		tpp := venCfg.TPP
+	case venaCfg.TPP != nil:
+		tpp := venaCfg.TPP
 		tppSecret, err := secretsLister.Secrets(namespace).Get(tpp.CredentialsRef.Name)
 		if err != nil {
 			return nil, err
@@ -167,12 +170,17 @@ func configForIssuer(iss cmapi.GenericIssuer, secretsLister internalinformers.Se
 
 		username := string(tppSecret.Data[tppUsernameKey])
 		password := string(tppSecret.Data[tppPasswordKey])
+		clientId := string(tppSecret.Data[tppClientIdKey])
+		// fallback to default client-id if not provided
+		if clientId == "" {
+			clientId = defaultTppClientId
+		}
 		accessToken := string(tppSecret.Data[tppAccessTokenKey])
 
 		return &vcert.Config{
 			ConnectorType: endpoint.ConnectorTypeTPP,
 			BaseUrl:       tpp.URL,
-			Zone:          venCfg.Zone,
+			Zone:          venaCfg.Zone,
 			// always enable verbose logging for now
 			LogVerbose: true,
 			// We supply the CA bundle here, to trigger the vcert's builtin
@@ -187,6 +195,7 @@ func configForIssuer(iss cmapi.GenericIssuer, secretsLister internalinformers.Se
 				User:        username,
 				Password:    password,
 				AccessToken: accessToken,
+				ClientId:    clientId,
 			},
 			Client: httpClientForVcert(&httpClientForVcertOptions{
 				UserAgent:               ptr.To(userAgent),
@@ -194,8 +203,8 @@ func configForIssuer(iss cmapi.GenericIssuer, secretsLister internalinformers.Se
 				TLSRenegotiationSupport: ptr.To(tls.RenegotiateOnceAsClient),
 			}),
 		}, nil
-	case venCfg.Cloud != nil:
-		cloud := venCfg.Cloud
+	case venaCfg.Cloud != nil:
+		cloud := venaCfg.Cloud
 		cloudSecret, err := secretsLister.Secrets(namespace).Get(cloud.APITokenSecretRef.Name)
 		if err != nil {
 			return nil, err
@@ -210,7 +219,7 @@ func configForIssuer(iss cmapi.GenericIssuer, secretsLister internalinformers.Se
 		return &vcert.Config{
 			ConnectorType: endpoint.ConnectorTypeCloud,
 			BaseUrl:       cloud.URL,
-			Zone:          venCfg.Zone,
+			Zone:          venaCfg.Zone,
 			// always enable verbose logging for now
 			LogVerbose: true,
 			Credentials: &endpoint.Authentication{
@@ -312,7 +321,7 @@ func httpClientForVcert(options *httpClientForVcertOptions) *http.Client {
 	// Copy vcert's initialization of the TLS client config
 	tlsClientConfig := http.DefaultTransport.(*http.Transport).TLSClientConfig.Clone()
 	if tlsClientConfig == nil {
-		tlsClientConfig = &tls.Config{}
+		tlsClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	if len(options.CABundle) > 0 {
 		rootCAs := x509.NewCertPool()
@@ -430,7 +439,7 @@ func (v *Venafi) VerifyCredentials() error {
 			resp, err := v.tppClient.GetRefreshToken(&endpoint.Authentication{
 				User:     v.config.Credentials.User,
 				Password: v.config.Credentials.Password,
-				ClientId: tppClientId,
+				ClientId: v.config.Credentials.ClientId,
 				Scope:    tppScopes,
 			})
 

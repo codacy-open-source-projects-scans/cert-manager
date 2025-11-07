@@ -25,6 +25,19 @@ import (
 	"os"
 	"time"
 
+	config "github.com/cert-manager/cert-manager/internal/apis/config/controller"
+	"github.com/cert-manager/cert-manager/internal/apis/config/shared"
+	"github.com/cert-manager/cert-manager/internal/controller/feature"
+	"github.com/cert-manager/cert-manager/pkg/controller"
+	"github.com/cert-manager/cert-manager/pkg/healthz"
+	dnsutil "github.com/cert-manager/cert-manager/pkg/issuer/acme/dns/util"
+	logf "github.com/cert-manager/cert-manager/pkg/logs"
+	"github.com/cert-manager/cert-manager/pkg/server"
+	"github.com/cert-manager/cert-manager/pkg/server/tls"
+	"github.com/cert-manager/cert-manager/pkg/server/tls/authority"
+	"github.com/cert-manager/cert-manager/pkg/util"
+	utilfeature "github.com/cert-manager/cert-manager/pkg/util/feature"
+	"github.com/cert-manager/cert-manager/pkg/util/profiling"
 	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -35,24 +48,8 @@ import (
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/clock"
 
 	"github.com/cert-manager/cert-manager/controller-binary/app/options"
-	config "github.com/cert-manager/cert-manager/internal/apis/config/controller"
-	"github.com/cert-manager/cert-manager/internal/apis/config/shared"
-	"github.com/cert-manager/cert-manager/internal/controller/feature"
-	"github.com/cert-manager/cert-manager/pkg/acme/accounts"
-	"github.com/cert-manager/cert-manager/pkg/controller"
-	"github.com/cert-manager/cert-manager/pkg/controller/clusterissuers"
-	"github.com/cert-manager/cert-manager/pkg/healthz"
-	dnsutil "github.com/cert-manager/cert-manager/pkg/issuer/acme/dns/util"
-	logf "github.com/cert-manager/cert-manager/pkg/logs"
-	"github.com/cert-manager/cert-manager/pkg/metrics"
-	"github.com/cert-manager/cert-manager/pkg/server"
-	"github.com/cert-manager/cert-manager/pkg/server/tls"
-	"github.com/cert-manager/cert-manager/pkg/server/tls/authority"
-	utilfeature "github.com/cert-manager/cert-manager/pkg/util/feature"
-	"github.com/cert-manager/cert-manager/pkg/util/profiling"
 )
 
 const (
@@ -72,6 +69,9 @@ func Run(rootCtx context.Context, opts *config.ControllerConfiguration) error {
 
 	log := logf.FromContext(rootCtx)
 	g, rootCtx := errgroup.WithContext(rootCtx)
+
+	versionInfo := util.VersionInfo()
+	log.Info("starting cert-manager controller", "version", versionInfo.GitVersion, "git_commit", versionInfo.GitCommit, "go_version", versionInfo.GoVersion, "platform", versionInfo.Platform)
 
 	ctxFactory, err := buildControllerContextFactory(rootCtx, opts)
 	if err != nil {
@@ -103,15 +103,19 @@ func Run(rootCtx context.Context, opts *config.ControllerConfiguration) error {
 	}
 
 	// Start metrics server
-	metricsLn, err := server.Listen("tcp", opts.MetricsListenAddress,
+	metricsLn, err := server.Listen(rootCtx, "tcp", opts.MetricsListenAddress,
 		server.WithCertificateSource(certificateSource),
 		server.WithTLSCipherSuites(opts.MetricsTLSConfig.CipherSuites),
 		server.WithTLSMinVersion(opts.MetricsTLSConfig.MinTLSVersion),
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to listen on prometheus address %s: %v", opts.MetricsListenAddress, err)
 	}
+
+	ctx.Metrics.SetupACMECollector(ctx.SharedInformerFactory.Acme().V1().Challenges().Lister())
+	ctx.Metrics.SetupCertificateCollector(ctx.SharedInformerFactory.Certmanager().V1().Certificates().Lister())
+	ctx.Metrics.SetupIssuerCollector(ctx.SharedInformerFactory.Certmanager().V1().Issuers().Lister())
+	ctx.Metrics.SetupClusterIssuerCollector(ctx.SharedInformerFactory.Certmanager().V1().ClusterIssuers().Lister())
 	metricsServer := ctx.Metrics.NewServer(metricsLn)
 
 	g.Go(func() error {
@@ -133,7 +137,8 @@ func Run(rootCtx context.Context, opts *config.ControllerConfiguration) error {
 
 	// Start profiler if it is enabled
 	if opts.EnablePprof {
-		profilerLn, err := net.Listen("tcp", opts.PprofAddress)
+		lc := net.ListenConfig{}
+		profilerLn, err := lc.Listen(rootCtx, "tcp", opts.PprofAddress)
 		if err != nil {
 			return fmt.Errorf("failed to listen on profiler address %s: %v", opts.PprofAddress, err)
 		}
@@ -162,7 +167,8 @@ func Run(rootCtx context.Context, opts *config.ControllerConfiguration) error {
 			return nil
 		})
 	}
-	healthzListener, err := net.Listen("tcp", opts.HealthzListenAddress)
+	lc := net.ListenConfig{}
+	healthzListener, err := lc.Listen(rootCtx, "tcp", opts.HealthzListenAddress)
 	if err != nil {
 		return fmt.Errorf("failed to listen on healthz address %s: %v", opts.HealthzListenAddress, err)
 	}
@@ -222,13 +228,7 @@ func Run(rootCtx context.Context, opts *config.ControllerConfiguration) error {
 
 		// only run a controller if it's been enabled
 		if !enabledControllers.Has(n) {
-			log.V(logf.InfoLevel).Info("not starting controller as it's disabled")
-			continue
-		}
-
-		// don't run clusterissuers controller if scoped to a single namespace
-		if ctx.Namespace != "" && n == clusterissuers.ControllerName {
-			log.V(logf.InfoLevel).Info("not starting controller as cert-manager has been scoped to a single namespace")
+			log.V(logf.InfoLevel).Info("skipping disabled controller")
 			continue
 		}
 
@@ -312,7 +312,6 @@ func buildControllerContextFactory(ctx context.Context, opts *config.ControllerC
 	}
 
 	ACMEHTTP01SolverRunAsNonRoot := opts.ACMEHTTP01Config.SolverRunAsNonRoot
-	acmeAccountRegistry := accounts.NewDefaultRegistry()
 
 	ctxFactory, err := controller.NewContextFactory(ctx, controller.ContextOptions{
 		Kubeconfig:         opts.KubeConfig,
@@ -321,9 +320,6 @@ func buildControllerContextFactory(ctx context.Context, opts *config.ControllerC
 		APIServerHost:      opts.APIServerHost,
 
 		Namespace: opts.Namespace,
-
-		Clock:   clock.RealClock{},
-		Metrics: metrics.New(log, clock.RealClock{}),
 
 		ACMEOptions: controller.ACMEOptions{
 			HTTP01SolverResourceRequestCPU:    http01SolverResourceRequestCPU,
@@ -338,8 +334,6 @@ func buildControllerContextFactory(ctx context.Context, opts *config.ControllerC
 			DNS01Nameservers:        nameservers,
 			DNS01CheckRetryPeriod:   opts.ACMEDNS01Config.CheckRetryPeriod,
 			DNS01CheckAuthoritative: !opts.ACMEDNS01Config.RecursiveNameserversOnly,
-
-			AccountRegistry: acmeAccountRegistry,
 		},
 
 		SchedulerOptions: controller.SchedulerOptions{
@@ -357,6 +351,7 @@ func buildControllerContextFactory(ctx context.Context, opts *config.ControllerC
 			DefaultIssuerKind:                 opts.IngressShimConfig.DefaultIssuerKind,
 			DefaultIssuerGroup:                opts.IngressShimConfig.DefaultIssuerGroup,
 			DefaultAutoCertificateAnnotations: opts.IngressShimConfig.DefaultAutoCertificateAnnotations,
+			ExtraCertificateAnnotations:       opts.IngressShimConfig.ExtraCertificateAnnotations,
 		},
 
 		CertificateOptions: controller.CertificateOptions{
@@ -435,6 +430,7 @@ func buildCertificateSource(log logr.Logger, tlsConfig shared.TLSConfig, restCfg
 			Authority: &authority.DynamicAuthority{
 				SecretNamespace: tlsConfig.Dynamic.SecretNamespace,
 				SecretName:      tlsConfig.Dynamic.SecretName,
+				SecretLabels:    map[string]string{"app.kubernetes.io/managed-by": "cert-manager"},
 				LeafDuration:    tlsConfig.Dynamic.LeafDuration,
 				RESTConfig:      restCfg,
 			},

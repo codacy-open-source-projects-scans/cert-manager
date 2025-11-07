@@ -19,9 +19,8 @@ package client
 import (
 	"context"
 
-	"golang.org/x/crypto/acme"
-
 	acmeutil "github.com/cert-manager/cert-manager/pkg/acme/util"
+	"github.com/cert-manager/cert-manager/third_party/forked/acme"
 )
 
 // Interface is an Automatic Certificate Management Environment (ACME) client
@@ -29,7 +28,7 @@ import (
 //
 // For more information see https://pkg.go.dev/golang.org/x/crypto/acme#Client
 // and RFC 8555 (https://tools.ietf.org/html/rfc8555).
-type Interface interface {
+type Interface interface { //nolint:interfacebloat
 	AuthorizeOrder(ctx context.Context, id []acme.AuthzID, opt ...acme.OrderOption) (*acme.Order, error)
 	GetOrder(ctx context.Context, url string) (*acme.Order, error)
 	FetchCert(ctx context.Context, url string, bundle bool) ([][]byte, error)

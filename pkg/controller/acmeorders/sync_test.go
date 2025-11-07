@@ -20,10 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
-	acmeapi "golang.org/x/crypto/acme"
+	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,11 +36,14 @@ import (
 	accountstest "github.com/cert-manager/cert-manager/pkg/acme/accounts/test"
 	acmecl "github.com/cert-manager/cert-manager/pkg/acme/client"
 	cmacme "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
+	v1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	testpkg "github.com/cert-manager/cert-manager/pkg/controller/test"
+	logf "github.com/cert-manager/cert-manager/pkg/logs"
 	schedulertest "github.com/cert-manager/cert-manager/pkg/scheduler/test"
 	"github.com/cert-manager/cert-manager/pkg/util/pki"
 	"github.com/cert-manager/cert-manager/test/unit/gen"
+	acmeapi "github.com/cert-manager/cert-manager/third_party/forked/acme"
 )
 
 func TestSync(t *testing.T) {
@@ -85,12 +90,27 @@ func TestSync(t *testing.T) {
 
 	testOrder := gen.Order("testorder",
 		gen.SetOrderCommonName("test.com"),
-		gen.SetOrderIssuer(cmmeta.ObjectReference{
+		gen.SetOrderIssuer(cmmeta.IssuerReference{
 			Name: testIssuerHTTP01TestCom.Name,
 		}),
 	)
 
-	testOrderIP := gen.Order("testorder", gen.SetOrderIssuer(cmmeta.ObjectReference{Name: testIssuerHTTP01.Name}), gen.SetOrderIPAddresses("10.0.0.1"))
+	testOrderIP := gen.Order("testorder",
+		gen.SetOrderCommonName("10.0.0.2"),
+		gen.SetOrderIssuer(cmmeta.IssuerReference{
+			Name: testIssuerHTTP01.Name,
+		}),
+		gen.SetOrderIPAddresses("10.0.0.1"))
+
+	const ipv6AddressOne = "2001:4860:4860::8888"
+	const ipv6AddressTwo = "2001:4860:4860::8844"
+
+	testOrderIPV6 := gen.Order("testorder",
+		gen.SetOrderCommonName(ipv6AddressOne),
+		gen.SetOrderIssuer(cmmeta.IssuerReference{
+			Name: testIssuerHTTP01.Name,
+		}),
+		gen.SetOrderIPAddresses(ipv6AddressTwo))
 
 	pendingStatus := cmacme.OrderStatus{
 		State:       cmacme.Pending,
@@ -244,7 +264,7 @@ Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5
 	decodeAll := func(pemBytes []byte) [][]byte {
 		var blocks [][]byte
 		for {
-			block, rest, _ := pem.SafeDecodeMultipleCertificates(pemBytes)
+			block, rest, _ := pem.SafeDecodeCertificateBundle(pemBytes)
 			if block == nil {
 				break
 			}
@@ -289,7 +309,7 @@ Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5
 			return "key", nil
 		},
 	}
-	testAuthorizationChallenge, err := buildPartialChallenge(context.TODO(), testIssuerHTTP01TestCom, testOrderPending, testOrderPending.Status.Authorizations[0])
+	testAuthorizationChallenge, err := buildPartialChallenge(t.Context(), testIssuerHTTP01TestCom, testOrderPending, testOrderPending.Status.Authorizations[0])
 
 	if err != nil {
 		t.Fatalf("error building Challenge resource test fixture: %v", err)
@@ -381,7 +401,7 @@ Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5
 				},
 			},
 		},
-		"create a new order with the acme server with an IP address": {
+		"create a new order with the acme server with an IPv4 address": {
 			order: testOrderIP,
 			builder: &testpkg.Builder{
 				CertManagerObjects: []runtime.Object{testIssuerHTTP01, testOrderIP},
@@ -406,6 +426,53 @@ Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5
 					if id[0].Value != "10.0.0.1" || id[0].Type != "ip" {
 						return nil, errors.New("AuthzID needs to be the IP")
 					}
+					if id[1].Value != "10.0.0.2" || id[1].Type != "ip" {
+						return nil, errors.New("AuthzID needs to be the IP")
+					}
+					return testACMEOrderPending, nil
+				},
+				FakeGetAuthorization: func(ctx context.Context, url string) (*acmeapi.Authorization, error) {
+					if url != "http://authzurl" {
+						return nil, fmt.Errorf("Invalid URL: expected http://authzurl got %q", url)
+					}
+					return testACMEAuthorizationPending, nil
+				},
+				FakeHTTP01ChallengeResponse: func(s string) (string, error) {
+					// TODO: assert s = "token"
+					return "key", nil
+				},
+			},
+		},
+		"create a new order with the acme server with an IPv6 address": {
+			order: testOrderIPV6,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{testIssuerHTTP01, testOrderIPV6},
+				ExpectedActions: []testpkg.Action{
+					testpkg.NewAction(coretesting.NewUpdateSubresourceAction(cmacme.SchemeGroupVersion.WithResource("orders"),
+						"status",
+						testOrderPending.Namespace,
+						gen.OrderFrom(testOrderIPV6, gen.SetOrderStatus(cmacme.OrderStatus{
+							State:       cmacme.Pending,
+							URL:         "http://testurl.com/abcde",
+							FinalizeURL: "http://testurl.com/abcde/finalize",
+							Authorizations: []cmacme.ACMEAuthorization{
+								{
+									URL: "http://authzurl",
+								},
+							},
+						})))),
+				},
+			},
+			acmeClient: &acmecl.FakeACME{
+				FakeAuthorizeOrder: func(ctx context.Context, id []acmeapi.AuthzID, opt ...acmeapi.OrderOption) (*acmeapi.Order, error) {
+					if id[0].Value != ipv6AddressTwo || id[0].Type != "ip" {
+						return nil, fmt.Errorf("AuthzID 1 needs to be expected IPv6 address: wanted value=%s but got %s", ipv6AddressTwo, id[0].Value)
+					}
+
+					if id[1].Value != ipv6AddressOne || id[1].Type != "ip" {
+						return nil, fmt.Errorf("AuthzID 2 needs to be expected IPv6 address: wanted value=%s but got %s", ipv6AddressOne, id[1].Value)
+					}
+
 					return testACMEOrderPending, nil
 				},
 				FakeGetAuthorization: func(ctx context.Context, url string) (*acmeapi.Authorization, error) {
@@ -429,7 +496,7 @@ Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5
 				},
 				ExpectedEvents: []string{
 					//nolint: dupword
-					`Normal Created Created Challenge resource "testorder-756011405" for domain "test.com"`,
+					`Normal Created Created Challenge resource "testorder-2580184217" for domain "test.com"`,
 				},
 			},
 			acmeClient: &acmecl.FakeACME{
@@ -893,6 +960,56 @@ Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5
 			},
 			acmeClient: &acmecl.FakeACME{},
 		},
+		"acme-profiles:profiles-not-implemented": {
+			// Simulate an attempt to create an order with a profile on an ACME
+			// server which does not support profiles.
+			order: testOrder,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{testIssuerHTTP01, testOrderPending},
+				ExpectedActions: []testpkg.Action{
+					testpkg.NewAction(
+						coretesting.NewUpdateSubresourceAction(
+							cmacme.SchemeGroupVersion.WithResource("orders"),
+							"status",
+							testOrderPending.Namespace,
+							gen.OrderFrom(
+								testOrderErrored,
+								gen.SetOrderReason("Failed to create Order: acme: certificate authority does not support profiles"),
+							),
+						)),
+				},
+			},
+			acmeClient: &acmecl.FakeACME{
+				FakeAuthorizeOrder: func(ctx context.Context, id []acmeapi.AuthzID, opt ...acmeapi.OrderOption) (*acmeapi.Order, error) {
+					return nil, acmeapi.ErrCADoesNotSupportProfiles
+				},
+			},
+		},
+		"acme-profiles:profile-not-supported": {
+			// Simulate an attempt to create an order with a profile which the
+			// ACME server does not provide.
+			order: testOrder,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{testIssuerHTTP01, testOrderPending},
+				ExpectedActions: []testpkg.Action{
+					testpkg.NewAction(
+						coretesting.NewUpdateSubresourceAction(
+							cmacme.SchemeGroupVersion.WithResource("orders"),
+							"status",
+							testOrderPending.Namespace,
+							gen.OrderFrom(
+								testOrderErrored,
+								gen.SetOrderReason("Failed to create Order: acme: certificate authority does not advertise a profile with name"),
+							),
+						)),
+				},
+			},
+			acmeClient: &acmecl.FakeACME{
+				FakeAuthorizeOrder: func(ctx context.Context, id []acmeapi.AuthzID, opt ...acmeapi.OrderOption) (*acmeapi.Order, error) {
+					return nil, acmeapi.ErrProfileNotInSetOfSupportedProfiles
+				},
+			},
+		},
 	}
 
 	for name, test := range tests {
@@ -943,7 +1060,7 @@ func runTest(t *testing.T, test testT) {
 
 	test.builder.Start()
 
-	err = cw.Sync(context.Background(), test.order)
+	err = cw.Sync(t.Context(), test.order)
 	if err != nil && !test.expectErr {
 		t.Errorf("Expected function to not error, but got: %v", err)
 	}
@@ -955,4 +1072,162 @@ func runTest(t *testing.T, test testT) {
 	}
 
 	test.builder.CheckAndFinish(err)
+}
+
+func TestFinalizeOrder(t *testing.T) {
+
+	tests := map[string]struct {
+		cl               acmecl.Interface
+		o                *cmacme.Order
+		createRequestLog string
+		getOrderLog      string
+		logCount         int
+	}{
+		"CreateOrderRequest - Succeed, UpdateOrderStatus - Succeed": {
+			cl: &acmecl.FakeACME{
+				FakeCreateOrderCert: func(ctx context.Context, finalizeURL string, csr []byte, bundle bool) (der [][]byte, certURL string, err error) {
+					return nil, "", nil
+				},
+				FakeGetOrder: func(ctx context.Context, url string) (*acmeapi.Order, error) {
+					return nil, nil
+				},
+			},
+			o: &cmacme.Order{
+				Spec: cmacme.OrderSpec{
+					DNSNames: []string{
+						"example.com",
+					},
+					IPAddresses: []string{
+						"1.2.3.4",
+					},
+				},
+			},
+			logCount: 0,
+		},
+		"CreateOrderRequest - Fail, UpdateOrderStatus - Succeed": {
+			cl: &acmecl.FakeACME{
+				FakeCreateOrderCert: func(ctx context.Context, finalizeURL string, csr []byte, bundle bool) (der [][]byte, certURL string, err error) {
+					return nil, "", &acmeapi.Error{
+						StatusCode: 500,
+						Header: http.Header{
+							"header1": []string{"header2"},
+						},
+					}
+				},
+			},
+			o: &cmacme.Order{
+				Spec: cmacme.OrderSpec{
+					DNSNames: []string{
+						"example.com",
+					},
+					IPAddresses: []string{
+						"1.2.3.4",
+					},
+				},
+			},
+			createRequestLog: "acme server fatal error err=\"500 : \" [errorCode 500 dnsNames [example.com] ipAddresses [1.2.3.4] responseHeaders map[header1:[header2]]]",
+			logCount:         1,
+		},
+		"CreateOrderRequest - Fail, UpdateOrderStatus - Fail": {
+			cl: &acmecl.FakeACME{
+				FakeCreateOrderCert: func(ctx context.Context, finalizeURL string, csr []byte, bundle bool) (der [][]byte, certURL string, err error) {
+					return nil, "", &acmeapi.Error{
+						StatusCode: 501,
+						Header: http.Header{
+							"header1": []string{"header2"},
+						},
+					}
+				},
+				FakeGetOrder: func(ctx context.Context, url string) (*acmeapi.Order, error) {
+					return nil, &acmeapi.Error{
+						StatusCode: 502,
+						Header: http.Header{
+							"header3": []string{"header4"},
+						},
+					}
+				},
+			},
+			o: &cmacme.Order{
+				Spec: cmacme.OrderSpec{
+					DNSNames: []string{
+						"example.com",
+					},
+					IPAddresses: []string{
+						"1.2.3.4",
+					},
+				},
+				Status: cmacme.OrderStatus{
+					URL: "example@example.com",
+				},
+			},
+			createRequestLog: "acme server fatal error err=\"501 : \" [errorCode 501 dnsNames [example.com] ipAddresses [1.2.3.4] responseHeaders map[header1:[header2]]]",
+			getOrderLog:      "acme server fatal error err=\"502 : \" [errorCode 502 dnsNames [example.com] ipAddresses [1.2.3.4] responseHeaders map[header3:[header4]]]",
+			logCount:         2,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := newFakeLogSink()
+			logger := logr.New(s)
+			ctx := context.Background()
+			ctx = logf.NewContext(ctx, logger)
+
+			i := &v1.Issuer{}
+			cw := &controllerWrapper{}
+
+			_ = cw.finalizeOrder(ctx, test.cl, test.o, i)
+			if len(s.errMessages) != test.logCount {
+				t.Errorf("Unexpected error message count. Expected %d, got %d", test.logCount, len(s.errMessages))
+			}
+
+			if test.createRequestLog != "" && s.errMessages[0] != test.createRequestLog {
+				t.Errorf("Incorrect log message got %q, expected %q", s.errMessages[0], test.createRequestLog)
+			}
+			if test.getOrderLog != "" && s.errMessages[1] != test.getOrderLog {
+				t.Errorf("Incorrect log message got %q, expected %q", s.errMessages[1], test.getOrderLog)
+			}
+		})
+	}
+
+}
+
+type fakeLogSink struct {
+	messages    []string
+	errMessages []string
+}
+
+func (l *fakeLogSink) Init(info logr.RuntimeInfo) {
+}
+
+func (l *fakeLogSink) Enabled(level int) bool {
+	return true
+}
+
+func (l *fakeLogSink) WithValues(keysAndValues ...any) logr.LogSink {
+	return l
+}
+
+func (l *fakeLogSink) WithName(name string) logr.LogSink {
+	return l
+}
+
+func newFakeLogSink() *fakeLogSink {
+	return &fakeLogSink{}
+}
+
+func (l *fakeLogSink) Info(level int, msg string, keysAndValues ...interface{}) {
+	l.messages = append(l.messages, fmt.Sprintf("%s %s", msg, keysAndValues))
+}
+
+func (l *fakeLogSink) Error(err error, msg string, keysAndValues ...interface{}) {
+	l.errMessages = append(l.errMessages, fmt.Sprintf("%s err=%q %v", msg, err, keysAndValues))
+}
+
+func (l *fakeLogSink) String() string {
+	out := make([]string, len(l.messages))
+	for i := range l.messages {
+		out[i] = "\t-" + l.messages[i]
+	}
+	return strings.Join(out, "\n")
 }

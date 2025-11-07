@@ -22,16 +22,15 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spf13/cobra"
-
-	"github.com/cert-manager/cert-manager/controller-binary/app/options"
 	config "github.com/cert-manager/cert-manager/internal/apis/config/controller"
 	"github.com/cert-manager/cert-manager/internal/apis/config/controller/validation"
 	controllerconfigfile "github.com/cert-manager/cert-manager/pkg/controller/configfile"
 	logf "github.com/cert-manager/cert-manager/pkg/logs"
-	"github.com/cert-manager/cert-manager/pkg/util"
 	"github.com/cert-manager/cert-manager/pkg/util/configfile"
 	utilfeature "github.com/cert-manager/cert-manager/pkg/util/feature"
+	"github.com/spf13/cobra"
+
+	"github.com/cert-manager/cert-manager/controller-binary/app/options"
 
 	_ "github.com/cert-manager/cert-manager/pkg/controller/acmechallenges"
 	_ "github.com/cert-manager/cert-manager/pkg/controller/acmeorders"
@@ -72,8 +71,7 @@ func newServerCommand(
 	}
 
 	cmd := &cobra.Command{
-		Use:   componentController,
-		Short: fmt.Sprintf("Automated TLS controller for Kubernetes (%s) (%s)", util.AppVersion, util.AppGitCommit),
+		Use: componentController,
 		Long: `
 cert-manager is a Kubernetes addon to automate the management and issuance of
 TLS certificates from various issuing sources.
@@ -123,7 +121,7 @@ to renew certificates at an appropriate time before expiry.`,
 	options.AddConfigFlags(cmd.Flags(), controllerConfig)
 
 	// explicitly set provided args in case it does not equal os.Args[:1],
-	// eg. when running tests
+	// e.g., when running tests
 	cmd.SetArgs(allArgs)
 
 	return cmd

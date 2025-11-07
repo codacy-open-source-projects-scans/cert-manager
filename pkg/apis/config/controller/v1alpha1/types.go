@@ -33,6 +33,7 @@ type ControllerConfiguration struct {
 	KubeConfig string `json:"kubeConfig,omitempty"`
 
 	// apiServerHost is used to override the API server connection address.
+	//
 	// Deprecated: use `kubeConfig` instead.
 	APIServerHost string `json:"apiServerHost,omitempty"`
 
@@ -162,6 +163,10 @@ type IngressShimConfig struct {
 	// The annotation consumed by the ingress-shim controller to indicate an ingress
 	// is requesting a certificate
 	DefaultAutoCertificateAnnotations []string `json:"defaultAutoCertificateAnnotations,omitempty"`
+
+	// ExtraCertificateAnnotations is a list of annotations which should be copied from
+	// and ingress-like object to a Certificate.
+	ExtraCertificateAnnotations []string `json:"extraCertificateAnnotations,omitempty"`
 }
 
 type ACMEHTTP01Config struct {

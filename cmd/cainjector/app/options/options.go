@@ -20,15 +20,14 @@ import (
 	"flag"
 	"strings"
 
-	"github.com/spf13/pflag"
-	cliflag "k8s.io/component-base/cli/flag"
-	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
-
 	config "github.com/cert-manager/cert-manager/internal/apis/config/cainjector"
 	configscheme "github.com/cert-manager/cert-manager/internal/apis/config/cainjector/scheme"
 	configv1alpha1 "github.com/cert-manager/cert-manager/pkg/apis/config/cainjector/v1alpha1"
 	logf "github.com/cert-manager/cert-manager/pkg/logs"
 	utilfeature "github.com/cert-manager/cert-manager/pkg/util/feature"
+	"github.com/spf13/pflag"
+	cliflag "k8s.io/component-base/cli/flag"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 // CAInjectorFlags defines options that can only be configured via flags.
@@ -97,7 +96,7 @@ func AddConfigFlags(fs *pflag.FlagSet, c *config.CAInjectorConfiguration) {
 		"cainjector to work correctly as cert-manager's internal component")
 	fs.BoolVar(&c.EnableInjectableConfig.CustomResourceDefinitions, "enable-customresourcedefinitions-injectable", c.EnableInjectableConfig.CustomResourceDefinitions, ""+
 		"Inject CA data to annotated CustomResourceDefinitions. This functionality is not required if "+
-		"cainjecor is only used as cert-manager's internal component and setting it to false might slightly reduce memory consumption")
+		"cainjector is only used as cert-manager's internal component and setting it to false might slightly reduce memory consumption")
 	fs.BoolVar(&c.EnableInjectableConfig.APIServices, "enable-apiservices-injectable", c.EnableInjectableConfig.APIServices, ""+
 		"Inject CA data to annotated APIServices. This functionality is not required if cainjector is "+
 		"only used as cert-manager's internal component and setting it to false might reduce memory consumption")

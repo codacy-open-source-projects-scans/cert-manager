@@ -98,7 +98,8 @@ var (
 	defaultACMEHTTP01SolverRunAsNonRoot          = true
 	defaultACMEHTTP01SolverNameservers           = []string{}
 
-	defaultAutoCertificateAnnotations = []string{"kubernetes.io/tls-acme"}
+	defaultAutoCertificateAnnotations  = []string{"kubernetes.io/tls-acme"}
+	defaultExtraCertificateAnnotations = []string{}
 
 	AllControllers = []string{
 		issuerscontroller.ControllerName,
@@ -121,6 +122,12 @@ var (
 		requestmanager.ControllerName,
 		readiness.ControllerName,
 		revisionmanager.ControllerName,
+		// experimental CSR controllers
+		csracmecontroller.CSRControllerName,
+		csrcacontroller.CSRControllerName,
+		csrselfsignedcontroller.CSRControllerName,
+		csrvenaficontroller.CSRControllerName,
+		csrvaultcontroller.CSRControllerName,
 	}
 
 	DefaultEnabledControllers = []string{
@@ -153,6 +160,15 @@ var (
 		csrvaultcontroller.CSRControllerName,
 	}
 
+	ClusterScopedControllers = []string{
+		clusterissuerscontroller.ControllerName,
+		csracmecontroller.CSRControllerName,
+		csrcacontroller.CSRControllerName,
+		csrselfsignedcontroller.CSRControllerName,
+		csrvenaficontroller.CSRControllerName,
+		csrvaultcontroller.CSRControllerName,
+	}
+
 	// Annotations that will be copied from Certificate to CertificateRequest and to Order.
 	// By default, copy all annotations except for the ones applied by kubectl, fluxcd, argocd.
 	defaultCopiedAnnotationPrefixes = []string{
@@ -168,6 +184,7 @@ func addDefaultingFuncs(scheme *runtime.Scheme) error {
 }
 
 func SetDefaults_ControllerConfiguration(obj *v1alpha1.ControllerConfiguration) {
+	// nolint:staticcheck // For backwards compatibility.
 	if obj.APIServerHost == "" {
 		obj.APIServerHost = defaultAPIServerHost
 	}
@@ -265,6 +282,10 @@ func SetDefaults_IngressShimConfig(obj *v1alpha1.IngressShimConfig) {
 	if len(obj.DefaultAutoCertificateAnnotations) == 0 {
 		obj.DefaultAutoCertificateAnnotations = defaultAutoCertificateAnnotations
 	}
+
+	if len(obj.ExtraCertificateAnnotations) == 0 {
+		obj.ExtraCertificateAnnotations = defaultExtraCertificateAnnotations
+	}
 }
 
 func SetDefaults_ACMEHTTP01Config(obj *v1alpha1.ACMEHTTP01Config) {
@@ -295,7 +316,6 @@ func SetDefaults_ACMEHTTP01Config(obj *v1alpha1.ACMEHTTP01Config) {
 	if len(obj.SolverNameservers) == 0 {
 		obj.SolverNameservers = defaultACMEHTTP01SolverNameservers
 	}
-
 }
 
 func SetDefaults_ACMEDNS01Config(obj *v1alpha1.ACMEDNS01Config) {

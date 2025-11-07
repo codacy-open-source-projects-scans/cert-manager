@@ -18,17 +18,16 @@ package acme
 
 import (
 	"context"
-	"encoding/base64"
 
+	cmacme "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+	"github.com/cert-manager/cert-manager/pkg/controller/certificatesigningrequests/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cert-manager/cert-manager/e2e-tests/framework"
 	"github.com/cert-manager/cert-manager/e2e-tests/framework/helper/featureset"
 	"github.com/cert-manager/cert-manager/e2e-tests/suite/conformance/certificatesigningrequests"
-	cmacme "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
-	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
-	"github.com/cert-manager/cert-manager/pkg/controller/certificatesigningrequests/util"
 
 	. "github.com/onsi/gomega"
 )
@@ -145,8 +144,9 @@ func (a *acme) ensureEABSecret(ctx context.Context, f *framework.Framework, ns s
 			Namespace:    ns,
 		},
 		Data: map[string][]byte{
-			// base64 url encode (without padding) the HMAC key
-			"key": []byte(base64.RawURLEncoding.EncodeToString([]byte("kid-secret-1"))),
+			// Must match the key in the Pebble config. See:
+			// config.json in make/config/pebble/templates/configmaps.yaml
+			"key": []byte("zWNDZM6eQGHWpSRTPal5eIUYFTu7EajVIoguysqZ9wG44nMEtx3MUAsUDkMTQ12W"),
 		},
 	}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())

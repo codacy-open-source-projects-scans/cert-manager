@@ -149,8 +149,8 @@ const (
 
 // Issuer specific Annotations
 const (
-	// VenafiCustomFieldsAnnotationKey is the annotation that passes on JSON encoded custom fields to the Venafi issuer
-	// This will only work with Venafi TPP v19.3 and higher
+	// VenafiCustomFieldsAnnotationKey is the annotation that passes on JSON encoded custom fields to the Certificate Manager issuer
+	// This will only work with CyberArk Certificate Manager Self-Hosted v19.3 and higher
 	// The value is an array with objects containing the name and value keys
 	// for example: `[{"name": "custom-field", "value": "custom-value"}]`
 	VenafiCustomFieldsAnnotationKey = "venafi.cert-manager.io/custom-fields"
@@ -211,4 +211,16 @@ const (
 	UsageOCSPSigning       KeyUsage = "ocsp signing"
 	UsageMicrosoftSGC      KeyUsage = "microsoft sgc"
 	UsageNetscapeSGC       KeyUsage = "netscape sgc"
+)
+
+type SignatureAlgorithm string
+
+const (
+	SHA256WithRSA   SignatureAlgorithm = "SHA256WithRSA"
+	SHA384WithRSA   SignatureAlgorithm = "SHA384WithRSA"
+	SHA512WithRSA   SignatureAlgorithm = "SHA512WithRSA"
+	ECDSAWithSHA256 SignatureAlgorithm = "ECDSAWithSHA256"
+	ECDSAWithSHA384 SignatureAlgorithm = "ECDSAWithSHA384"
+	ECDSAWithSHA512 SignatureAlgorithm = "ECDSAWithSHA512"
+	PureEd25519     SignatureAlgorithm = "PureEd25519"
 )

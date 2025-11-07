@@ -18,14 +18,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
-
-	"github.com/spf13/cobra"
-	"k8s.io/component-base/logs"
 
 	"github.com/cert-manager/cert-manager/pkg/issuer/acme/http/solver"
 	logf "github.com/cert-manager/cert-manager/pkg/logs"
+	"github.com/spf13/cobra"
+	"k8s.io/component-base/logs"
 )
 
 func NewACMESolverCommand(_ context.Context) *cobra.Command {
@@ -66,7 +67,7 @@ func NewACMESolverCommand(_ context.Context) *cobra.Command {
 				}
 			}()
 
-			if err := s.Listen(log); err != nil {
+			if err := s.Listen(log); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				return err
 			}
 

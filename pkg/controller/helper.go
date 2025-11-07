@@ -24,7 +24,7 @@ import (
 // ResourceNamespace returns the Kubernetes namespace where resources
 // created or read by `iss` are located.
 func (o IssuerOptions) ResourceNamespace(iss cmapi.GenericIssuer) string {
-	ns := iss.GetObjectMeta().Namespace
+	ns := iss.GetNamespace()
 	if ns == "" {
 		ns = o.ClusterResourceNamespace
 	}
@@ -33,10 +33,10 @@ func (o IssuerOptions) ResourceNamespace(iss cmapi.GenericIssuer) string {
 
 // ResourceNamespaceRef returns the Kubernetes namespace where resources
 // created or read by the referenced issuer are located.
-// This function is identical to CanUseAmbientCredentials, but takes a reference to
+// This function is identical to ResourceNamespace, but takes a reference to
 // the issuer instead of the issuer itself (which means we don't need to fetch the
 // issuer from the API server).
-func (o IssuerOptions) ResourceNamespaceRef(ref cmmeta.ObjectReference, challengeNamespace string) string {
+func (o IssuerOptions) ResourceNamespaceRef(ref cmmeta.IssuerReference, challengeNamespace string) string {
 	switch ref.Kind {
 	case cmapi.ClusterIssuerKind:
 		return o.ClusterResourceNamespace
@@ -47,7 +47,7 @@ func (o IssuerOptions) ResourceNamespaceRef(ref cmmeta.ObjectReference, challeng
 }
 
 // CanUseAmbientCredentials returns whether `iss` will attempt to configure itself
-// from ambient credentials (e.g. from a cloud metadata service).
+// from ambient credentials (e.g., from a cloud metadata service).
 func (o IssuerOptions) CanUseAmbientCredentials(iss cmapi.GenericIssuer) bool {
 	switch iss.(type) {
 	case *cmapi.ClusterIssuer:
@@ -59,11 +59,11 @@ func (o IssuerOptions) CanUseAmbientCredentials(iss cmapi.GenericIssuer) bool {
 }
 
 // CanUseAmbientCredentialsFromRef returns whether the referenced issuer will attempt
-// to configure itself from ambient credentials (e.g. from a cloud metadata service).
+// to configure itself from ambient credentials (e.g., from a cloud metadata service).
 // This function is identical to CanUseAmbientCredentials, but takes a reference to
 // the issuer instead of the issuer itself (which means we don't need to fetch the
 // issuer from the API server).
-func (o IssuerOptions) CanUseAmbientCredentialsFromRef(ref cmmeta.ObjectReference) bool {
+func (o IssuerOptions) CanUseAmbientCredentialsFromRef(ref cmmeta.IssuerReference) bool {
 	switch ref.Kind {
 	case cmapi.ClusterIssuerKind:
 		return o.ClusterIssuerAmbientCredentials

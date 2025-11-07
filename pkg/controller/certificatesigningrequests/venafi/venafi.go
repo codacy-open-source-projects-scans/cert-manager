@@ -40,7 +40,6 @@ import (
 	venafiapi "github.com/cert-manager/cert-manager/pkg/issuer/venafi/client/api"
 	logf "github.com/cert-manager/cert-manager/pkg/logs"
 	"github.com/cert-manager/cert-manager/pkg/metrics"
-	"github.com/cert-manager/cert-manager/pkg/util/pki"
 	utilpki "github.com/cert-manager/cert-manager/pkg/util/pki"
 )
 
@@ -49,7 +48,7 @@ const (
 )
 
 // Venafi is a Kubernetes CertificateSigningRequest controller, responsible for
-// signing CertificateSigningRequests that reference a cert-manager Venafi
+// signing CertificateSigningRequests that reference a cert-manager Certificate Manager
 // Issuer or ClusterIssuer
 type Venafi struct {
 	issuerOptions controllerpkg.IssuerOptions
@@ -112,7 +111,7 @@ func (v *Venafi) Sign(ctx context.Context, csr *certificatesv1.CertificateSignin
 	}
 
 	if err != nil {
-		message := fmt.Sprintf("Failed to initialise venafi client for signing: %s", err)
+		message := fmt.Sprintf("Failed to initialise Certificate Manager client for signing: %s", err)
 		v.recorder.Event(csr, corev1.EventTypeWarning, "ErrorVenafiInit", message)
 		log.Error(err, message)
 		return err
@@ -130,7 +129,7 @@ func (v *Venafi) Sign(ctx context.Context, csr *certificatesv1.CertificateSignin
 		}
 	}
 
-	duration, err := pki.DurationFromCertificateSigningRequest(csr)
+	duration, err := utilpki.DurationFromCertificateSigningRequest(csr)
 	if err != nil {
 		message := fmt.Sprintf("Failed to parse requested duration: %s", err)
 		log.Error(err, message)
@@ -160,7 +159,7 @@ func (v *Venafi) Sign(ctx context.Context, csr *certificatesv1.CertificateSignin
 				return userr
 
 			default:
-				message := fmt.Sprintf("Failed to request venafi certificate: %s", err)
+				message := fmt.Sprintf("Failed to request Certificate Manager certificate: %s", err)
 				log.Error(err, message)
 				v.recorder.Event(csr, corev1.EventTypeWarning, "ErrorRequest", message)
 				util.CertificateSigningRequestSetFailed(csr, "ErrorRequest", message)
@@ -181,7 +180,7 @@ func (v *Venafi) Sign(ctx context.Context, csr *certificatesv1.CertificateSignin
 	if err != nil {
 		switch err.(type) {
 		case endpoint.ErrCertificatePending:
-			message := "Venafi certificate still in a pending state, waiting"
+			message := "certificate still in a pending state, waiting"
 			log.V(2).Info(message, "error", err.Error())
 			v.recorder.Event(csr, corev1.EventTypeNormal, "IssuancePending", message)
 			return err
@@ -193,7 +192,7 @@ func (v *Venafi) Sign(ctx context.Context, csr *certificatesv1.CertificateSignin
 			return err
 
 		default:
-			message := fmt.Sprintf("Failed to obtain venafi certificate: %s", err)
+			message := fmt.Sprintf("Failed to obtain Certificate Manager certificate: %s", err)
 			log.Error(err, message)
 			v.recorder.Event(csr, corev1.EventTypeWarning, "ErrorRetrieve", message)
 			return err
@@ -219,7 +218,7 @@ func (v *Venafi) Sign(ctx context.Context, csr *certificatesv1.CertificateSignin
 	}
 
 	log.V(logf.DebugLevel).Info("certificate issued")
-	v.recorder.Event(csr, corev1.EventTypeNormal, "CertificateIssued", "Certificate fetched from venafi issuer successfully")
+	v.recorder.Event(csr, corev1.EventTypeNormal, "CertificateIssued", "Certificate fetched from Certificate Manager issuer successfully")
 
 	return nil
 }
