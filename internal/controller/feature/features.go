@@ -126,8 +126,9 @@ const (
 	// Github Issue: https://github.com/cert-manager/cert-manager/issues/3655
 	NameConstraints featuregate.Feature = "NameConstraints"
 
-	// Owner: @SpectralHiss
+	// Owner: @SpectralHiss, @wallrj-cyberark
 	// Alpha: v1.14
+	// Beta: v1.20
 	//
 	// OtherNames adds support for OtherName Subject Alternative Name values in
 	// Certificate resources.
@@ -160,6 +161,7 @@ const (
 	// Owner: @wallrj
 	// Alpha: v1.18.0
 	// Beta: v1.18.0
+	// GA: v1.20.0
 	//
 	// DefaultPrivateKeyRotationPolicyAlways change the default value of
 	// `Certificate.Spec.PrivateKey.RotationPolicy` to `Always`.
@@ -209,9 +211,9 @@ var defaultCertManagerFeatureGates = map[featuregate.Feature]featuregate.Feature
 	LiteralCertificateSubject:                        {Default: true, PreRelease: featuregate.Beta},
 	UseCertificateRequestBasicConstraints:            {Default: false, PreRelease: featuregate.Alpha},
 	NameConstraints:                                  {Default: true, PreRelease: featuregate.Beta},
-	OtherNames:                                       {Default: false, PreRelease: featuregate.Alpha},
+	OtherNames:                                       {Default: true, PreRelease: featuregate.Beta},
 	UseDomainQualifiedFinalizer:                      {Default: true, PreRelease: featuregate.GA},
-	DefaultPrivateKeyRotationPolicyAlways:            {Default: true, PreRelease: featuregate.Beta},
+	DefaultPrivateKeyRotationPolicyAlways:            {Default: true, PreRelease: featuregate.GA},
 	ACMEHTTP01IngressPathTypeExact:                   {Default: true, PreRelease: featuregate.Beta},
 
 	// NB: Deprecated + removed feature gates are kept here.
