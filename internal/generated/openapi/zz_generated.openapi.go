@@ -1558,6 +1558,13 @@ func schema_pkg_apis_acme_v1_ACMEIssuerDNS01ProviderAzureDNS(ref common.Referenc
 							Ref:         ref("github.com/cert-manager/cert-manager/pkg/apis/acme/v1.AzureManagedIdentity"),
 						},
 					},
+					"zoneType": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ZoneType determines which type of Azure DNS zone to use.\n\nValid values are:\n  - AzurePublicZone  (default): Use a public Azure DNS zone.\n  - AzurePrivateZone: Use an Azure Private DNS zone.\n\nIf not specified, AzurePublicZone is used.\n\nSupport for Azure Private DNS zones is currently experimental and may change in future releases.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"subscriptionID", "resourceGroupName"},
 			},
@@ -1667,7 +1674,7 @@ func schema_pkg_apis_acme_v1_ACMEIssuerDNS01ProviderRFC2136(ref common.Reference
 				Properties: map[string]spec.Schema{
 					"nameserver": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The IP address or hostname of an authoritative DNS server supporting RFC2136 in the form host:port. If the host is an IPv6 address it must be enclosed in square brackets (e.g [2001:db8::1])\u00a0; port is optional. This field is required.",
+							Description: "The IP address or hostname of an authoritative DNS server supporting RFC2136 in the form host:port. If the host is an IPv6 address it must be enclosed in square brackets (e.g [2001:db8::1]); port is optional. This field is required.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -23318,7 +23325,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_BackendTLSPolicyValidation(ref common.
 					},
 					"wellKnownCACertificates": {
 						SchemaProps: spec.SchemaProps{
-							Description: "WellKnownCACertificates specifies whether a well-known set of CA certificates may be used in the TLS handshake between the gateway and backend pod.\n\nIf WellKnownCACertificates is unspecified or empty (\"\"), then CACertificateRefs must be specified with at least one entry for a valid configuration. Only one of CACertificateRefs or WellKnownCACertificates may be specified, not both. If an implementation does not support the WellKnownCACertificates field, or the supplied value is not recognized, the implementation MUST ensure the `Accepted` Condition on the BackendTLSPolicy is set to `status: False`, with a Reason `Invalid`.\n\nValid values include: * \"System\" - indicates that well-known system CA certificates should be used.\n\nImplementations MAY define their own sets of CA certificates. Such definitions MUST use an implementation-specific, prefixed name, such as `mycompany.com/my-custom-ca-certifcates`.\n\nSupport: Implementation-specific",
+							Description: "WellKnownCACertificates specifies whether a well-known set of CA certificates may be used in the TLS handshake between the gateway and backend pod.\n\nIf WellKnownCACertificates is unspecified or empty (\"\"), then CACertificateRefs must be specified with at least one entry for a valid configuration. Only one of CACertificateRefs or WellKnownCACertificates may be specified, not both. If an implementation does not support the WellKnownCACertificates field, or the supplied value is not recognized, the implementation MUST ensure the `Accepted` Condition on the BackendTLSPolicy is set to `status: False`, with a Reason `Invalid`.\n\nValid values include: * \"System\" - indicates that well-known system CA certificates should be used.\n\nImplementations MAY define their own sets of CA certificates. Such definitions MUST use an implementation-specific, prefixed name, such as `mycompany.com/my-custom-ca-certificates`.\n\nSupport: Implementation-specific",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -27642,7 +27649,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_TLSRouteRule(ref common.ReferenceCallb
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a nonexistent resource or a Service with no endpoints), the rule performs no forwarding; if no filters are specified that would result in a response being sent, the underlying implementation must actively reject request attempts to this backend, by rejecting the connection or returning a 500 status code. Request rejections must respect weight; if an invalid backend is requested to have 80% of requests, then 80% of requests must be rejected instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
+							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a nonexistent resource or a Service with no endpoints), the rule performs no forwarding; if no filters are specified that would result in a response being sent, the underlying implementation must actively reject request attempts to this backend, by rejecting the connection. Request rejections must respect weight; if an invalid backend is requested to have 80% of requests, then 80% of requests must be rejected instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
