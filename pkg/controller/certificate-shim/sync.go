@@ -135,7 +135,7 @@ func SyncFnFor(
 
 		err = validateIngressLike(ingLike).ToAggregate()
 		if err != nil {
-			rec.Eventf(ingLikeObj, corev1.EventTypeWarning, reasonBadConfig, err.Error())
+			rec.Eventf(ingLikeObj, corev1.EventTypeWarning, reasonBadConfig, "%s", err.Error())
 			return nil
 		}
 
@@ -146,7 +146,15 @@ func SyncFnFor(
 		}
 
 		for _, crt := range newCrts {
-			_, err := cmClient.CertmanagerV1().Certificates(crt.Namespace).Create(ctx, crt, metav1.CreateOptions{FieldManager: fieldManager})
+			if utilfeature.DefaultFeatureGate.Enabled(feature.ServerSideApply) {
+				// Apply, not Create, so the Certificate is born owned by an
+				// operation:Apply entry that the update path can prune from.
+				// Not forced, so a Certificate the shim does not own conflicts
+				// rather than being adopted; the error requeues the item.
+				err = internalcertificates.ApplyNonForced(ctx, cmClient, fieldManager, crt)
+			} else {
+				_, err = cmClient.CertmanagerV1().Certificates(crt.Namespace).Create(ctx, crt, metav1.CreateOptions{FieldManager: fieldManager})
+			}
 			if err != nil {
 				return err
 			}
@@ -156,22 +164,7 @@ func SyncFnFor(
 		for _, crt := range updateCrts {
 
 			if utilfeature.DefaultFeatureGate.Enabled(feature.ServerSideApply) {
-				err = internalcertificates.Apply(ctx, cmClient, fieldManager, &cmapi.Certificate{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:            crt.Name,
-						Namespace:       crt.Namespace,
-						Labels:          crt.Labels,
-						OwnerReferences: crt.OwnerReferences,
-						Annotations:     extraAnnotations,
-					},
-					Spec: cmapi.CertificateSpec{
-						DNSNames:    crt.Spec.DNSNames,
-						IPAddresses: crt.Spec.IPAddresses,
-						SecretName:  crt.Spec.SecretName,
-						IssuerRef:   crt.Spec.IssuerRef,
-						Usages:      crt.Spec.Usages,
-					},
-				})
+				err = internalcertificates.Apply(ctx, cmClient, fieldManager, crt)
 			} else {
 				_, err = cmClient.CertmanagerV1().Certificates(crt.Namespace).Update(ctx, crt, metav1.UpdateOptions{})
 			}
@@ -355,7 +348,7 @@ func buildCertificates(
 			path := field.NewPath("spec", "tls").Index(i)
 			err := validateIngressTLSBlock(path, tls).ToAggregate()
 			if err != nil {
-				rec.Eventf(ingLike, corev1.EventTypeWarning, reasonBadConfig, "Skipped a TLS block: "+err.Error())
+				rec.Eventf(ingLike, corev1.EventTypeWarning, reasonBadConfig, "Skipped a TLS block: %s", err.Error())
 				continue
 			}
 			tlsHosts[corev1.ObjectReference{
@@ -387,16 +380,12 @@ func buildCertificates(
 			controllerGVK = gatewayGVK
 		}
 
-		var ipAddress, dnsNames []string
-		for _, h := range hosts {
-			if ip := net.ParseIP(h); ip != nil {
-				ipAddress = append(ipAddress, h)
-			} else {
-				dnsNames = append(dnsNames, h)
-			}
-		}
+		dnsNames, ipAddress := splitHosts(hosts)
 
-		labels := ingLike.GetLabels()
+		// The ingresses and gateways controllers pass the informer-cached
+		// object straight in, so clone its labels before deleting from them
+		// and never let the Certificate alias the cached map.
+		labels := maps.Clone(ingLike.GetLabels())
 
 		// Remove applyset labels, as they cause certificates to be
 		// incorrectly pruned.
@@ -414,12 +403,14 @@ func buildCertificates(
 		//
 		delete(labels, applysetLabel)
 
+		// annotations is one map shared by every Certificate built in this loop,
+		// so clone it: setIssuerSpecificConfig below writes into crt.Annotations.
 		crt := &cmapi.Certificate{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:            secretRef.Name,
 				Namespace:       secretRef.Namespace,
 				Labels:          labels,
-				Annotations:     annotations,
+				Annotations:     maps.Clone(annotations),
 				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(ingLike, controllerGVK)},
 			},
 			Spec: cmapi.CertificateSpec{
@@ -470,21 +461,22 @@ func buildCertificates(
 				continue
 			}
 
+			// An Apply declares only the fields this manager owns, so crt goes
+			// out as built. An Update replaces the whole object, so the shim's
+			// fields have to be merged into a copy of the live Certificate.
+			if utilfeature.DefaultFeatureGate.Enabled(feature.ServerSideApply) {
+				updateCrts = append(updateCrts, crt)
+				continue
+			}
+
 			updateCrt := existingCrt.DeepCopy()
 
 			updateCrt.Spec = crt.Spec
 			updateCrt.Labels = crt.Labels
 
-			// extra annotation wanted but none set
-			if len(updateCrt.GetAnnotations()) == 0 && len(annotations) > 0 {
-				updateCrt.SetAnnotations(annotations)
+			if len(crt.GetAnnotations()) > 0 {
+				updateCrt.SetAnnotations(mergeAnnotations(updateCrt.GetAnnotations(), crt.GetAnnotations()))
 			}
-			// update append extra annotations
-			if len(updateCrt.GetAnnotations()) > 0 && len(annotations) > 0 {
-				updateCrt.SetAnnotations(mergeAnnotations(updateCrt.GetAnnotations(), annotations))
-			}
-
-			setIssuerSpecificConfig(crt, ingLike)
 
 			updateCrts = append(updateCrts, updateCrt)
 		} else {
@@ -515,7 +507,7 @@ func handleGatewayAPIListeners[L gwapi.Listener | gwapi.ListenerEntry](listeners
 
 		err := validateGatewayListenerBlock(field.NewPath("spec", "listeners").Index(i), l, ingLike).ToAggregate()
 		if err != nil {
-			rec.Eventf(ingLike, corev1.EventTypeWarning, reasonBadConfig, "Skipped a listener block: "+err.Error())
+			rec.Eventf(ingLike, corev1.EventTypeWarning, reasonBadConfig, "Skipped a listener block: %s", err.Error())
 			continue
 		}
 
@@ -533,6 +525,26 @@ func handleGatewayAPIListeners[L gwapi.Listener | gwapi.ListenerEntry](listeners
 			tlsHosts[secretRef] = append(tlsHosts[secretRef], string(*l.Hostname))
 		}
 	}
+}
+
+// splitHosts de-duplicates hosts and splits them into DNS names and IP
+// addresses, preserving first-seen order. Duplicates arise when several
+// listeners reference the same Secret and hostname; dropping them keeps the
+// Certificate's SAN count in sync with the ACME order's identifiers.
+func splitHosts(hosts []string) (dnsNames, ipAddresses []string) {
+	seen := sets.New[string]()
+	for _, h := range hosts {
+		if seen.Has(h) {
+			continue
+		}
+		seen.Insert(h)
+		if ip := net.ParseIP(h); ip != nil {
+			ipAddresses = append(ipAddresses, h)
+		} else {
+			dnsNames = append(dnsNames, h)
+		}
+	}
+	return dnsNames, ipAddresses
 }
 
 func findCertificatesToBeRemoved(certs []*cmapi.Certificate, ingLike metav1.Object) []string {
@@ -777,7 +789,7 @@ func setIssuerSpecificConfig(crt *cmapi.Certificate, ingLike metav1.Object) {
 		crt.Annotations[cmacme.ACMECertificateHTTP01IngressClassNameOverride] = ingressClassNameVal
 	}
 
-	switch ingLike.(type) {
+	switch ingLike := ingLike.(type) {
 	case *gwapi.Gateway:
 		if crt.Annotations == nil {
 			crt.Annotations = make(map[string]string)
@@ -785,14 +797,30 @@ func setIssuerSpecificConfig(crt *cmapi.Certificate, ingLike metav1.Object) {
 		crt.Annotations[cmacme.ACMECertificateHTTP01ParentRefKind] = "Gateway"
 		crt.Annotations[cmacme.ACMECertificateHTTP01ParentRefName] = ingLike.GetName()
 	case *gwapi.ListenerSet:
-		if crt.Annotations == nil {
-			crt.Annotations = make(map[string]string)
-		}
-		crt.Annotations[cmacme.ACMECertificateHTTP01ParentRefKind] = "ListenerSet"
-		crt.Annotations[cmacme.ACMECertificateHTTP01ParentRefName] = ingLike.GetName()
+		setListenerSetParentRefAnnotations(crt, ingLike, ingAnnotations)
 	}
 
 	ingLike.SetAnnotations(ingAnnotations)
+}
+
+func setListenerSetParentRefAnnotations(crt *cmapi.Certificate, listenerSet *gwapi.ListenerSet, ingAnnotations map[string]string) {
+	if crt.Annotations == nil {
+		crt.Annotations = make(map[string]string)
+	}
+	if enabled, _ := strconv.ParseBool(ingAnnotations[cmacme.ACMECertificateHTTP01ParentRefFallback]); enabled {
+		parentNS := listenerSet.GetNamespace()
+		if listenerSet.Spec.ParentRef.Namespace != nil && string(*listenerSet.Spec.ParentRef.Namespace) != "" {
+			parentNS = string(*listenerSet.Spec.ParentRef.Namespace)
+		}
+		crt.Annotations[cmacme.ACMECertificateHTTP01ParentRefKind] = "Gateway"
+		crt.Annotations[cmacme.ACMECertificateHTTP01ParentRefName] = string(listenerSet.Spec.ParentRef.Name)
+		crt.Annotations[cmacme.ACMECertificateHTTP01ParentRefNamespace] = parentNS
+	} else {
+		crt.Annotations[cmacme.ACMECertificateHTTP01ParentRefKind] = "ListenerSet"
+		crt.Annotations[cmacme.ACMECertificateHTTP01ParentRefName] = listenerSet.GetName()
+		// Clear any stale namespace annotation from a previous fallback configuration.
+		delete(crt.Annotations, cmacme.ACMECertificateHTTP01ParentRefNamespace)
+	}
 }
 
 // hasShimAnnotation returns true if the given ingress-like resource contains

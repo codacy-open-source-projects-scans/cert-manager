@@ -153,7 +153,9 @@ func autoConvert_v1alpha1_ACMEHTTP01Config_To_controller_ACMEHTTP01Config(in *co
 	if err := v1.Convert_Pointer_bool_To_bool(&in.SolverRunAsNonRoot, &out.SolverRunAsNonRoot, s); err != nil {
 		return err
 	}
+	out.SolverRuntimeClassName = in.SolverRuntimeClassName
 	out.SolverNameservers = *(*[]string)(unsafe.Pointer(&in.SolverNameservers))
+	out.SolverExtraLabels = *(*map[string]string)(unsafe.Pointer(&in.SolverExtraLabels))
 	return nil
 }
 
@@ -171,7 +173,9 @@ func autoConvert_controller_ACMEHTTP01Config_To_v1alpha1_ACMEHTTP01Config(in *co
 	if err := v1.Convert_bool_To_Pointer_bool(&in.SolverRunAsNonRoot, &out.SolverRunAsNonRoot, s); err != nil {
 		return err
 	}
+	out.SolverRuntimeClassName = in.SolverRuntimeClassName
 	out.SolverNameservers = *(*[]string)(unsafe.Pointer(&in.SolverNameservers))
+	out.SolverExtraLabels = *(*map[string]string)(unsafe.Pointer(&in.SolverExtraLabels))
 	return nil
 }
 
@@ -244,6 +248,9 @@ func autoConvert_v1alpha1_ControllerConfiguration_To_controller_ControllerConfig
 		return err
 	}
 	if err := sharedv1alpha1.Convert_Pointer_v1alpha1_Duration_To_time_Duration(&in.CertificateRequestMinimumBackoffDuration, &out.CertificateRequestMinimumBackoffDuration, s); err != nil {
+		return err
+	}
+	if err := sharedv1alpha1.Convert_Pointer_v1alpha1_Duration_To_time_Duration(&in.CertificateRequestMaximumBackoffDuration, &out.CertificateRequestMaximumBackoffDuration, s); err != nil {
 		return err
 	}
 	return nil
@@ -320,6 +327,9 @@ func autoConvert_controller_ControllerConfiguration_To_v1alpha1_ControllerConfig
 	if err := sharedv1alpha1.Convert_time_Duration_To_Pointer_v1alpha1_Duration(&in.CertificateRequestMinimumBackoffDuration, &out.CertificateRequestMinimumBackoffDuration, s); err != nil {
 		return err
 	}
+	if err := sharedv1alpha1.Convert_time_Duration_To_Pointer_v1alpha1_Duration(&in.CertificateRequestMaximumBackoffDuration, &out.CertificateRequestMaximumBackoffDuration, s); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -361,11 +371,7 @@ func Convert_controller_GatewayAPIConfig_To_v1alpha1_GatewayAPIConfig(in *contro
 }
 
 func autoConvert_v1alpha1_IngressShimConfig_To_controller_IngressShimConfig(in *controllerv1alpha1.IngressShimConfig, out *controller.IngressShimConfig, s conversion.Scope) error {
-	out.DefaultIssuerName = in.DefaultIssuerName
-	out.DefaultIssuerKind = in.DefaultIssuerKind
-	out.DefaultIssuerGroup = in.DefaultIssuerGroup
-	out.DefaultAutoCertificateAnnotations = *(*[]string)(unsafe.Pointer(&in.DefaultAutoCertificateAnnotations))
-	out.ExtraCertificateAnnotations = *(*[]string)(unsafe.Pointer(&in.ExtraCertificateAnnotations))
+	*out = *(*controller.IngressShimConfig)(unsafe.Pointer(in))
 	return nil
 }
 
@@ -375,11 +381,7 @@ func Convert_v1alpha1_IngressShimConfig_To_controller_IngressShimConfig(in *cont
 }
 
 func autoConvert_controller_IngressShimConfig_To_v1alpha1_IngressShimConfig(in *controller.IngressShimConfig, out *controllerv1alpha1.IngressShimConfig, s conversion.Scope) error {
-	out.DefaultIssuerName = in.DefaultIssuerName
-	out.DefaultIssuerKind = in.DefaultIssuerKind
-	out.DefaultIssuerGroup = in.DefaultIssuerGroup
-	out.DefaultAutoCertificateAnnotations = *(*[]string)(unsafe.Pointer(&in.DefaultAutoCertificateAnnotations))
-	out.ExtraCertificateAnnotations = *(*[]string)(unsafe.Pointer(&in.ExtraCertificateAnnotations))
+	*out = *(*controllerv1alpha1.IngressShimConfig)(unsafe.Pointer(in))
 	return nil
 }
 

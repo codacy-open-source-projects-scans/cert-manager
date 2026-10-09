@@ -149,11 +149,17 @@ type ControllerConfiguration struct {
 	// GatewayAPIConfig configures the behaviour of the Gateway API integration
 	GatewayAPIConfig GatewayAPIConfig
 
-	// CertificateRequestMinimumBackoffDuration configures the initial backoff duration
-	// when a certificate request fails. This duration is exponentially increased (up to
-	// a maximum of 32 hours) based on the number of consecutive failures and represents
-	// the minimum backoff applied.
+	// CertificateRequestMinimumBackoffDuration configures the minimum backoff duration
+	// when a certificate request fails (default 1h). The backoff delay starts at
+	// this value and is exponentially increased with each consecutive failure,
+	// up to the configured maximum backoff duration.
 	CertificateRequestMinimumBackoffDuration time.Duration
+
+	// CertificateRequestMaximumBackoffDuration configures the maximum backoff duration
+	// when a certificate request fails. The backoff delay starts at
+	// the minimum backoff duration and is exponentially increased with
+	// each consecutive failure, but will never exceed this maximum (default 32h).
+	CertificateRequestMaximumBackoffDuration time.Duration
 }
 
 type LeaderElectionConfig struct {
@@ -213,11 +219,22 @@ type ACMEHTTP01Config struct {
 	// issues
 	SolverRunAsNonRoot bool
 
+	// Defines the runtime class for the http01 solver
+	SolverRuntimeClassName string
+
 	// A list of comma separated dns server endpoints used for
 	// ACME HTTP01 check requests. This should be a list containing host and
 	// port, for example ["8.8.8.8:53","8.8.4.4:53"]
 	// Allows specifying a list of custom nameservers to perform HTTP01 checks on.
 	SolverNameservers []string
+
+	// Extra labels applied to all dynamically-created ACME HTTP01 solver
+	// resources (pods, services, ingresses, or Gateway API HTTPRoutes). Applied
+	// in addition to the standard ACME challenge identification labels.
+	// The following ACME identity label keys are reserved and will be silently
+	// ignored: acme.cert-manager.io/http-domain, acme.cert-manager.io/http-token,
+	// acme.cert-manager.io/http01-solver.
+	SolverExtraLabels map[string]string
 }
 
 type ACMEDNS01Config struct {

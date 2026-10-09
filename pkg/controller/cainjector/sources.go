@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -117,11 +118,11 @@ func (c *certificateDataSource) ReadCA(ctx context.Context, log logr.Logger, met
 		return nil, dropNotFound(err)
 	}
 
-	secretName := &types.NamespacedName{Namespace: cert.Namespace, Name: cert.Spec.SecretName}
+	secretName := types.NamespacedName{Namespace: cert.Namespace, Name: cert.Spec.SecretName}
 	// grab the associated secret, and ensure it's owned by the cert
 	log = log.WithValues("secret", secretName)
 	var secret corev1.Secret
-	if err := c.client.Get(ctx, *secretName, &secret); err != nil {
+	if err := c.client.Get(ctx, secretName, &secret); err != nil {
 		log.Error(err, "unable to fetch associated secret")
 		// don't requeue if we're just not found, we'll get called when the secret gets created
 		return nil, dropNotFound(err)
@@ -133,9 +134,13 @@ func (c *certificateDataSource) ReadCA(ctx context.Context, log logr.Logger, met
 	// usually set the ownerReference of the Secret.
 	owner := owningCertForSecret(&secret)
 	if owner == nil || *owner != certName {
+		// klog.SafePtr prevents the nil owner (annotation missing) from
+		// reaching the logger's Stringer call, which would panic in the
+		// promoted value-receiver String method and render the field as
+		// "<panic: ...>".
 		log.V(logf.WarnLevel).Info(
 			"refusing to target secret: cert-manager.io/certificate-name annotation does not match",
-			"annotationValue", owner,
+			"annotationValue", klog.SafePtr(owner),
 			"expected", certName,
 		)
 		return nil, nil

@@ -132,6 +132,16 @@ func AddConfigFlags(fs *pflag.FlagSet, c *config.ControllerConfiguration) {
 			"ACME HTTP01 check requests. This should be a list containing host and "+
 			"port, for example 8.8.8.8:53,8.8.4.4:53")
 
+	fs.Var(cliflag.NewMapStringString(&c.ACMEHTTP01Config.SolverExtraLabels),
+		"acme-http01-solver-extra-labels",
+		"A set of key=value pairs for additional labels to apply to dynamically-created "+
+			"ACME HTTP01 solver resources (pods, services, ingresses, or Gateway API HTTPRoutes). "+
+			"The following ACME identity label keys are reserved and will be silently "+
+			"ignored: acme.cert-manager.io/http-domain, acme.cert-manager.io/http-token, "+
+			"acme.cert-manager.io/http01-solver. These labels can be overridden by per-Issuer "+
+			"podTemplate/ingressTemplate/GatewayHTTPRoute.Labels.")
+
+	fs.StringVar(&c.ACMEHTTP01Config.SolverRuntimeClassName, "acme-http01-solver-runtime-class-name", c.ACMEHTTP01Config.SolverRuntimeClassName, "RuntimeClassName to apply to ACME HTTP01 solver pods")
 	fs.BoolVar(&c.ClusterIssuerAmbientCredentials, "cluster-issuer-ambient-credentials", c.ClusterIssuerAmbientCredentials, ""+
 		"Whether a cluster-issuer may make use of ambient credentials for issuers. 'Ambient Credentials' are credentials drawn from the environment, metadata services, or local files which are not explicitly configured in the ClusterIssuer API object. "+
 		"When this flag is enabled, the following sources for credentials are also used: "+
@@ -246,8 +256,13 @@ func AddConfigFlags(fs *pflag.FlagSet, c *config.ControllerConfiguration) {
 		"Maximum size in bytes for PEM-encoded certificate bundles.")
 
 	fs.DurationVar(&c.CertificateRequestMinimumBackoffDuration, "certificate-request-minimum-backoff-duration", c.CertificateRequestMinimumBackoffDuration, ""+
-		"Duration of the initial certificate request backoff when a certificate request fails. "+
-		"The backoff duration is exponentially increased based on consecutive failures, up to a maximum of 32 hours.")
+		"Minimum duration to back off when a certificate request fails (default 1h). "+
+		"The backoff delay starts at this value and is exponentially increased "+
+		"with each consecutive failure, up to the configured maximum backoff duration.")
+	fs.DurationVar(&c.CertificateRequestMaximumBackoffDuration, "certificate-request-maximum-backoff-duration", c.CertificateRequestMaximumBackoffDuration, ""+
+		"Maximum duration to back off when a certificate request fails. "+
+		"The backoff delay starts at the minimum backoff duration and is exponentially increased "+
+		"with each consecutive failure, but will never exceed this maximum (default 32h).")
 
 	logf.AddFlags(&c.Logging, fs)
 }

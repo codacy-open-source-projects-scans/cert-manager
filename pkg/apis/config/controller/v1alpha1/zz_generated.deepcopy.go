@@ -70,6 +70,13 @@ func (in *ACMEHTTP01Config) DeepCopyInto(out *ACMEHTTP01Config) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.SolverExtraLabels != nil {
+		in, out := &in.SolverExtraLabels, &out.SolverExtraLabels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	return
 }
 
@@ -164,6 +171,11 @@ func (in *ControllerConfiguration) DeepCopyInto(out *ControllerConfiguration) {
 	in.GatewayAPIConfig.DeepCopyInto(&out.GatewayAPIConfig)
 	if in.CertificateRequestMinimumBackoffDuration != nil {
 		in, out := &in.CertificateRequestMinimumBackoffDuration, &out.CertificateRequestMinimumBackoffDuration
+		*out = new(sharedv1alpha1.Duration)
+		**out = **in
+	}
+	if in.CertificateRequestMaximumBackoffDuration != nil {
+		in, out := &in.CertificateRequestMaximumBackoffDuration, &out.CertificateRequestMaximumBackoffDuration
 		*out = new(sharedv1alpha1.Duration)
 		**out = **in
 	}

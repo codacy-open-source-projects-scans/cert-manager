@@ -47,7 +47,7 @@ func NewACMESolverCommand(_ context.Context) *cobra.Command {
 
 			return nil
 		},
-		// nolint:contextcheck // False positive
+		//nolint:contextcheck // False positive
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runCtx := cmd.Context()
 			log := logf.FromContext(runCtx)
@@ -61,7 +61,7 @@ func NewACMESolverCommand(_ context.Context) *cobra.Command {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 
-				// nolint: contextcheck
+				//nolint: contextcheck
 				if err := s.Shutdown(shutdownCtx); err != nil {
 					log.Error(err, "error shutting down acmesolver server")
 				}
@@ -82,7 +82,11 @@ func NewACMESolverCommand(_ context.Context) *cobra.Command {
 	cmd.Flags().StringVar(&s.Token, "token", "", "the challenge token to verify against")
 	cmd.Flags().StringVar(&s.Key, "key", "", "the challenge key to respond with")
 
-	// TODO(@inteon): use flags to configure the log configuration (https://github.com/cert-manager/cert-manager/issues/6021)
+	logf.AddFlagsNonDeprecated(logOptions, cmd.Flags())
+
+	// TODO: the controller hard-codes the solver container args, so nothing can
+	// set these on a solver Pod yet. Part of
+	// https://github.com/cert-manager/cert-manager/issues/6021
 
 	return cmd
 }

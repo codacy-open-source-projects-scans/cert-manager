@@ -18,6 +18,8 @@ package issuing
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -29,13 +31,15 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	coretesting "k8s.io/client-go/testing"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	fakeclock "k8s.io/utils/clock/testing"
-	"k8s.io/utils/ptr"
 
+	"github.com/cert-manager/cert-manager/internal/controller/feature"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	"github.com/cert-manager/cert-manager/pkg/controller/certificates/issuing/internal"
 	testpkg "github.com/cert-manager/cert-manager/pkg/controller/test"
+	utilfeature "github.com/cert-manager/cert-manager/pkg/util/feature"
 	testcrypto "github.com/cert-manager/cert-manager/test/unit/crypto"
 	"github.com/cert-manager/cert-manager/test/unit/gen"
 )
@@ -51,6 +55,27 @@ func testLocalTemporarySignerFn(b []byte) localTemporarySignerFn {
 	}
 }
 
+const nextPrivateKeySecretName = "next-private-key"
+
+// nextPrivateKeySecretMeta builds the ObjectMeta that the keymanager
+// controller gives to a next private key Secret: the labels it sets, and a
+// controller owner reference back to the Certificate. The issuing controller
+// only consumes Secrets carrying the next-private-key label and that owner
+// reference, so fixtures must set them.
+func nextPrivateKeySecretMeta(crt *cmapi.Certificate) metav1.ObjectMeta {
+	return metav1.ObjectMeta{
+		Namespace: crt.Namespace,
+		Name:      nextPrivateKeySecretName,
+		Labels: map[string]string{
+			cmapi.IsNextPrivateKeySecretLabelKey:      "true",
+			cmapi.PartOfCertManagerControllerLabelKey: "true",
+		},
+		OwnerReferences: []metav1.OwnerReference{
+			*metav1.NewControllerRef(crt, cmapi.SchemeGroupVersion.WithKind("Certificate")),
+		},
+	}
+}
+
 func TestIssuingController(t *testing.T) {
 	type testT struct {
 		builder *testpkg.Builder
@@ -58,10 +83,12 @@ func TestIssuingController(t *testing.T) {
 		certificate             *cmapi.Certificate
 		expSecretUpdateDataCall *internal.SecretData
 
+		// localTemporarySigner, if set, overrides the signer that the runner
+		// otherwise wires up to return a valid temporary certificate.
+		localTemporarySigner localTemporarySignerFn
+
 		expectedErr bool
 	}
-
-	nextPrivateKeySecretName := "next-private-key"
 
 	baseCert := gen.Certificate("test",
 		gen.SetCertificateIssuer(cmmeta.IssuerReference{Name: "ca-issuer", Kind: "Issuer", Group: "foo.io"}),
@@ -85,6 +112,28 @@ func TestIssuingController(t *testing.T) {
 			LastTransitionTime: &metaFixedClockStart,
 		}),
 	)
+
+	// incompleteRequest builds the state this fix is about: a
+	// CertificateRequest for the revision being issued that has a failureTime
+	// and no Ready condition. The UID is pinned because it reaches the message,
+	// and the creationTimestamp because it decides which issuance it belongs to.
+	const incompleteRequestUID = "incomplete-request-uid"
+	incompleteRequest := func(failureTime, creation time.Time, mods ...gen.CertificateRequestModifier) *cmapi.CertificateRequest {
+		return gen.CertificateRequestFrom(exampleBundle.CertificateRequest, append([]gen.CertificateRequestModifier{
+			gen.AddCertificateRequestAnnotations(map[string]string{
+				cmapi.CertificateRequestRevisionAnnotationKey: "2", // Current Certificate revision=1
+			}),
+			gen.SetCertificateRequestFailureTime(metav1.Time{Time: failureTime}),
+			func(cr *cmapi.CertificateRequest) {
+				cr.Status.Conditions = nil
+				cr.UID = incompleteRequestUID
+				cr.CreationTimestamp = metav1.NewTime(creation)
+			},
+		}, mods...)...)
+	}
+	incompleteFailureMessage := fmt.Sprintf(
+		"The certificate request has failed to complete and will be retried: CertificateRequest %s/%s (UID %s) has a failureTime but no Ready condition",
+		exampleBundle.CertificateRequest.Namespace, exampleBundle.CertificateRequest.Name, incompleteRequestUID)
 
 	tests := map[string]testT{
 		"if certificate is not in Issuing state, then do nothing": {
@@ -113,6 +162,47 @@ func TestIssuingController(t *testing.T) {
 				KubeObjects:     []runtime.Object{},
 				ExpectedActions: []testpkg.Action{},
 			},
+			expectedErr: false,
+		},
+
+		"if certificate is in Issuing state but NextPrivateKeySecretName names a Secret it does not own, do nothing": {
+			// A principal with access only to the certificates/status
+			// subresource must not be able to make the controller read an
+			// unrelated Secret and copy its private key into spec.secretName.
+			//
+			// Everything else here matches the successful issuance case below,
+			// so the only reason nothing happens is that the Secret named by
+			// status.nextPrivateKeySecretName, although it carries the
+			// cert-manager.io/next-private-key label and a controller owner
+			// reference, is owned by a Certificate with a different UID. Only
+			// the owner UID comparison rejects it.
+			//
+			// The Certificate keeps its empty fixture UID on purpose: the
+			// CertificateRequest fixture's owner reference has that UID too, and
+			// changing it would orphan the request and make this case pass for
+			// the wrong reason.
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					issuingCert.DeepCopy(),
+					gen.CertificateRequestFrom(exampleBundle.CertificateRequestReady,
+						gen.AddCertificateRequestAnnotations(map[string]string{
+							cmapi.CertificateRequestRevisionAnnotationKey: "2", // Current Certificate revision=1
+						}),
+					)},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(gen.CertificateFrom(issuingCert, gen.SetCertificateUID("other-uid"))),
+						Data: map[string][]byte{
+							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{},
+				ExpectedEvents:  []string{},
+			},
+			// No expSecretUpdateDataCall: the private key must not be copied
+			// into spec.secretName.
 			expectedErr: false,
 		},
 
@@ -204,10 +294,7 @@ func TestIssuingController(t *testing.T) {
 				},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -236,10 +323,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -267,10 +351,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -291,7 +372,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -305,7 +386,7 @@ func TestIssuingController(t *testing.T) {
 			certificate: exampleBundle.Certificate,
 			builder: &testpkg.Builder{
 				CertManagerObjects: []runtime.Object{
-					gen.CertificateFrom(issuingCert, gen.SetCertificateIssuanceAttempts(ptr.To(4))),
+					gen.CertificateFrom(issuingCert, gen.SetCertificateIssuanceAttempts(new(4))),
 					gen.CertificateRequestFrom(exampleBundle.CertificateRequestFailed,
 						gen.AddCertificateRequestAnnotations(map[string]string{
 							cmapi.CertificateRequestRevisionAnnotationKey: "2", // Current Certificate revision=1
@@ -319,10 +400,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -343,7 +421,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(5)),
+							gen.SetCertificateIssuanceAttempts(new(5)),
 						),
 					)),
 				},
@@ -403,10 +481,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: []byte("bad key"),
 						},
@@ -429,12 +504,321 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundleAlt.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{},
+				ExpectedEvents:  []string{},
+			},
+			expectedErr: false,
+		},
+		"if certificate is in Issuing state, one CertificateRequest that failed, but the private key stored in the Secret does not match that creating the CSR, do nothing": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					gen.CertificateRequestFrom(exampleBundle.CertificateRequestFailed,
+						gen.AddCertificateRequestAnnotations(map[string]string{
+							cmapi.CertificateRequestRevisionAnnotationKey: "2", // Current Certificate revision=1
+						}),
+						// After the Issuing transition, so this is not the earlier
+						// "failed during a previous issuance" case.
+						gen.SetCertificateRequestFailureTime(metav1.Time{Time: metaFixedClockStart.Time.Add(time.Second)}),
+					)},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							// Replaced after this request's CSR was built.
+							corev1.TLSPrivateKeyKey: exampleBundleAlt.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{},
+				ExpectedEvents:  []string{},
+			},
+			expectedErr: false,
+		},
+		// #9116's ordering: a request whose CSR no longer matches the next
+		// private key is the request manager's to replace, and this issuance
+		// must not be failed for it.
+		"if certificate is in Issuing state, one incomplete CertificateRequest, but the private key stored in the Secret does not match that creating the CSR, do nothing": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					incompleteRequest(metaFixedClockStart.Time.Add(time.Second), metaFixedClockStart.Time.Add(time.Second)),
+				},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							// Replaced after this request's CSR was built.
+							corev1.TLSPrivateKeyKey: exampleBundleAlt.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{},
+				ExpectedEvents:  []string{},
+			},
+			expectedErr: false,
+		},
+		"if certificate is in Issuing state, one CertificateRequest that was denied, but the private key stored in the Secret does not match that creating the CSR, do nothing": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					gen.CertificateRequestFrom(exampleBundle.CertificateRequest,
+						gen.AddCertificateRequestAnnotations(map[string]string{
+							cmapi.CertificateRequestRevisionAnnotationKey: "2", // Current Certificate revision=1
+						}),
+						gen.SetCertificateRequestStatusCondition(cmapi.CertificateRequestCondition{
+							Type:    cmapi.CertificateRequestConditionDenied,
+							Status:  cmmeta.ConditionTrue,
+							Reason:  "Denied",
+							Message: "denied by policy",
+						}),
+					)},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							// Replaced after this request's CSR was built.
+							corev1.TLSPrivateKeyKey: exampleBundleAlt.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{},
+				ExpectedEvents:  []string{},
+			},
+			expectedErr: false,
+		},
+		// #9128 made this state visible with an Event. Failing the issuance is
+		// what hands it to the existing backoff and recycling.
+		"if certificate is in Issuing state, one CertificateRequest with a failure time but no Ready condition, fail the issuance": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					// Stamped after the Issuing transition, so it belongs to
+					// the attempt in progress.
+					incompleteRequest(metaFixedClockStart.Time.Add(time.Second), metaFixedClockStart.Time.Add(time.Second)),
+				},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{
+					testpkg.NewAction(coretesting.NewUpdateSubresourceAction(
+						cmapi.SchemeGroupVersion.WithResource("certificates"),
+						"status",
+						exampleBundle.Certificate.Namespace,
+						gen.CertificateFrom(exampleBundle.Certificate,
+							gen.SetCertificateStatusCondition(cmapi.CertificateCondition{
+								Type:               cmapi.CertificateConditionIssuing,
+								Status:             cmmeta.ConditionFalse,
+								Reason:             "Stalled",
+								Message:            incompleteFailureMessage,
+								LastTransitionTime: &metaFixedClockStart,
+								ObservedGeneration: 3,
+							}),
+							gen.SetCertificateLastFailureTime(metaFixedClockStart),
+							gen.SetCertificateIssuanceAttempts(new(1)),
+						),
+					)),
+				},
+				ExpectedEvents: []string{
+					"Warning Stalled " + incompleteFailureMessage,
+				},
+			},
+			expectedErr: false,
+		},
+		// The retry the trigger controller has just started must not count the
+		// previous issuance's failure again; the request manager recycles it.
+		"if certificate is in Issuing state, one incomplete CertificateRequest from a previous issuance, do nothing": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					incompleteRequest(metaFixedClockStart.Time.Add(-time.Hour), metaFixedClockStart.Time.Add(-2*time.Hour)),
+				},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{},
+			},
+			expectedErr: false,
+		},
+		// creationTimestamp comes from the API server and failureTime from the
+		// issuer, so an issuer whose clock is behind stamps a request it has
+		// just created with a time before the transition. Counting it here is
+		// what stops the request manager recycling it every round unpaced.
+		"if certificate is in Issuing state, one incomplete CertificateRequest created during this issuance but stamped with an older failureTime, fail the issuance": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					incompleteRequest(metaFixedClockStart.Time.Add(-time.Hour), metaFixedClockStart.Time.Add(2*time.Second)),
+				},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{
+					testpkg.NewAction(coretesting.NewUpdateSubresourceAction(
+						cmapi.SchemeGroupVersion.WithResource("certificates"),
+						"status",
+						exampleBundle.Certificate.Namespace,
+						gen.CertificateFrom(exampleBundle.Certificate,
+							gen.SetCertificateStatusCondition(cmapi.CertificateCondition{
+								Type:               cmapi.CertificateConditionIssuing,
+								Status:             cmmeta.ConditionFalse,
+								Reason:             "Stalled",
+								Message:            incompleteFailureMessage,
+								LastTransitionTime: &metaFixedClockStart,
+								ObservedGeneration: 3,
+							}),
+							gen.SetCertificateLastFailureTime(metaFixedClockStart),
+							gen.SetCertificateIssuanceAttempts(new(1)),
+						),
+					)),
+				},
+				ExpectedEvents: []string{
+					"Warning Stalled " + incompleteFailureMessage,
+				},
+			},
+			expectedErr: false,
+		},
+		// Denied and InvalidRequest are decisions of their own. Recycling a
+		// request that carries one only gets the same answer again, so they
+		// keep their priority over the incomplete-failure handling above.
+		"if certificate is in Issuing state, one denied CertificateRequest with no Ready condition and an older failureTime, report denial": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					incompleteRequest(metaFixedClockStart.Time.Add(-time.Hour), metaFixedClockStart.Time.Add(-2*time.Hour),
+						gen.SetCertificateRequestStatusCondition(cmapi.CertificateRequestCondition{
+							Type:    cmapi.CertificateRequestConditionDenied,
+							Status:  cmmeta.ConditionTrue,
+							Reason:  "DeniedReason",
+							Message: "The certificate request has been denied",
+						}),
+					),
+				},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{
+					testpkg.NewAction(coretesting.NewUpdateSubresourceAction(
+						cmapi.SchemeGroupVersion.WithResource("certificates"),
+						"status",
+						exampleBundle.Certificate.Namespace,
+						gen.CertificateFrom(exampleBundle.Certificate,
+							gen.SetCertificateStatusCondition(cmapi.CertificateCondition{
+								Type:               cmapi.CertificateConditionIssuing,
+								Status:             cmmeta.ConditionFalse,
+								Reason:             "DeniedReason",
+								Message:            "The certificate request has failed to complete and will be retried: The certificate request has been denied",
+								LastTransitionTime: &metaFixedClockStart,
+								ObservedGeneration: 3,
+							}),
+							gen.SetCertificateLastFailureTime(metaFixedClockStart),
+							gen.SetCertificateIssuanceAttempts(new(1)),
+						),
+					)),
+				},
+				ExpectedEvents: []string{
+					"Warning DeniedReason The certificate request has failed to complete and will be retried: The certificate request has been denied",
+				},
+			},
+			expectedErr: false,
+		},
+		"if certificate is in Issuing state, one invalid CertificateRequest with no Ready condition and an older failureTime, report the invalid request": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					incompleteRequest(metaFixedClockStart.Time.Add(-time.Hour), metaFixedClockStart.Time.Add(-2*time.Hour),
+						gen.SetCertificateRequestStatusCondition(cmapi.CertificateRequestCondition{
+							Type:    cmapi.CertificateRequestConditionInvalidRequest,
+							Status:  cmmeta.ConditionTrue,
+							Reason:  "InvalidRequest",
+							Message: "The certificate request is invalid",
+						}),
+					),
+				},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedActions: []testpkg.Action{
+					testpkg.NewAction(coretesting.NewUpdateSubresourceAction(
+						cmapi.SchemeGroupVersion.WithResource("certificates"),
+						"status",
+						exampleBundle.Certificate.Namespace,
+						gen.CertificateFrom(exampleBundle.Certificate,
+							gen.SetCertificateStatusCondition(cmapi.CertificateCondition{
+								Type:               cmapi.CertificateConditionIssuing,
+								Status:             cmmeta.ConditionFalse,
+								Reason:             "InvalidRequest",
+								Message:            "The certificate request has failed to complete and will be retried: The certificate request is invalid",
+								LastTransitionTime: &metaFixedClockStart,
+								ObservedGeneration: 3,
+							}),
+							gen.SetCertificateLastFailureTime(metaFixedClockStart),
+							gen.SetCertificateIssuanceAttempts(new(1)),
+						),
+					)),
+				},
+				ExpectedEvents: []string{
+					"Warning InvalidRequest The certificate request has failed to complete and will be retried: The certificate request is invalid",
+				},
+			},
+			expectedErr: false,
+		},
+		"if certificate is in Issuing state, one CertificateRequest with no failure time and no Ready condition, do nothing": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					gen.CertificateRequestFrom(exampleBundle.CertificateRequest,
+						// Explicit, so the case keeps covering the missing condition.
+						func(cr *cmapi.CertificateRequest) { cr.Status.Conditions = nil },
+						gen.AddCertificateRequestAnnotations(map[string]string{
+							cmapi.CertificateRequestRevisionAnnotationKey: "2", // Current Certificate revision=1
+						}),
+					)},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
 					},
 				},
@@ -456,10 +840,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -483,10 +864,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -530,10 +908,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -587,10 +962,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -637,7 +1009,7 @@ func TestIssuingController(t *testing.T) {
 			builder: &testpkg.Builder{
 				CertManagerObjects: []runtime.Object{
 					gen.CertificateFrom(issuingCert, gen.SetCertificateLastFailureTime(metaFixedClockStart),
-						gen.SetCertificateIssuanceAttempts(ptr.To(4))),
+						gen.SetCertificateIssuanceAttempts(new(4))),
 					gen.CertificateRequestFrom(exampleBundle.CertificateRequestReady,
 						gen.AddCertificateRequestAnnotations(map[string]string{
 							cmapi.CertificateRequestRevisionAnnotationKey: "2", // Current Certificate revision=1
@@ -645,10 +1017,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -707,10 +1076,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -729,6 +1095,41 @@ func TestIssuingController(t *testing.T) {
 			expectedErr: false,
 		},
 
+		// Issuing a temporary certificate can fail on a Certificate that the
+		// webhook accepts, e.g. an unsupported spec.privateKey.encoding, and
+		// then fails identically on every reconcile.
+		"if certificate is in Issuing state with temp annotation and the temporary certificate cannot be issued, record a Warning event": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert,
+						gen.AddCertificateAnnotations(map[string]string{
+							cmapi.IssueTemporaryCertificateAnnotation: "true",
+						}),
+					),
+					gen.CertificateRequestFrom(exampleBundle.CertificateRequestPending,
+						gen.AddCertificateRequestAnnotations(map[string]string{
+							cmapi.CertificateRequestRevisionAnnotationKey: "2", // Current Certificate revision=1
+						}),
+					)},
+				KubeObjects: []runtime.Object{
+					&corev1.Secret{
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
+						Data: map[string][]byte{
+							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
+						},
+					},
+				},
+				ExpectedEvents: []string{
+					"Warning TemporaryCertificateFailed Failed to issue temporary certificate: this is a signing error",
+				},
+			},
+			localTemporarySigner: func(_ *cmapi.Certificate, _ []byte) ([]byte, error) {
+				return nil, errors.New("this is a signing error")
+			},
+			expectedErr: true,
+		},
+
 		"if certificate is in Issuing state with temp annotation, one CertificateRequest Pending, a target Secret but with no data, issue temporary certificate to that Secret": {
 			certificate: exampleBundle.Certificate,
 			builder: &testpkg.Builder{
@@ -745,10 +1146,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -794,10 +1192,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -840,10 +1235,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -892,10 +1284,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -937,10 +1326,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -996,10 +1382,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -1023,7 +1406,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -1051,10 +1434,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -1075,7 +1455,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -1109,10 +1489,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -1133,7 +1510,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -1167,10 +1544,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -1191,7 +1565,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -1219,10 +1593,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -1243,7 +1614,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -1277,10 +1648,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -1301,7 +1669,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -1335,10 +1703,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -1359,7 +1724,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -1382,10 +1747,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -1406,7 +1768,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -1432,10 +1794,7 @@ func TestIssuingController(t *testing.T) {
 					)},
 				KubeObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      nextPrivateKeySecretName,
-							Namespace: exampleBundle.Certificate.Namespace,
-						},
+						ObjectMeta: nextPrivateKeySecretMeta(exampleBundle.Certificate),
 						Data: map[string][]byte{
 							corev1.TLSPrivateKeyKey: exampleBundle.PrivateKeyBytes,
 						},
@@ -1456,7 +1815,7 @@ func TestIssuingController(t *testing.T) {
 								ObservedGeneration: 3,
 							}),
 							gen.SetCertificateLastFailureTime(metaFixedClockStart),
-							gen.SetCertificateIssuanceAttempts(ptr.To(1)),
+							gen.SetCertificateIssuanceAttempts(new(1)),
 						),
 					)),
 				},
@@ -1480,6 +1839,9 @@ func TestIssuingController(t *testing.T) {
 			_, _, err := w.Register(test.builder.Context)
 			require.NoError(t, err)
 			w.controller.localTemporarySigner = testLocalTemporarySignerFn(exampleBundle.LocalTemporaryCertificateBytes)
+			if test.localTemporarySigner != nil {
+				w.controller.localTemporarySigner = test.localTemporarySigner
+			}
 
 			var secretsUpdateDataCalled bool
 			w.controller.secretsUpdateData = func(_ context.Context, _ *cmapi.Certificate, secretData internal.SecretData) error {
@@ -1507,4 +1869,280 @@ func TestIssuingController(t *testing.T) {
 			test.builder.CheckAndFinish(err)
 		})
 	}
+}
+
+// TestIssuingController_ServerSideApplyFailedIssuanceAttempts checks ApplyStatus
+// includes failedIssuanceAttempts on failure and omits it on success.
+func TestIssuingController_ServerSideApplyFailedIssuanceAttempts(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, feature.ServerSideApply, true)
+
+	fixture := failedIssuanceFixture(t)
+	exampleBundle := fixture.bundle
+	issuingCert := fixture.issuingCert
+	nextPrivateKeySecret := fixture.nextPrivateKeySecret
+	metaFixedClockStart := metav1.NewTime(fixedClockStart)
+
+	type testT struct {
+		builder                 *testpkg.Builder
+		certificate             *cmapi.Certificate
+		expSecretUpdateDataCall *internal.SecretData
+		expApplyStatusPatch     []byte
+	}
+
+	tests := map[string]testT{
+		"failure ApplyStatus includes failedIssuanceAttempts": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert),
+					fixture.failedRequest,
+				},
+				KubeObjects: []runtime.Object{nextPrivateKeySecret},
+				ExpectedEvents: []string{
+					"Warning Failed The certificate request has failed to complete and will be retried: The certificate request failed because of reasons",
+				},
+			},
+			expApplyStatusPatch: mustSerializeApplyStatus(t, exampleBundle.Certificate, cmapi.CertificateStatus{
+				Conditions: []cmapi.CertificateCondition{{
+					Type:               cmapi.CertificateConditionIssuing,
+					Status:             cmmeta.ConditionFalse,
+					LastTransitionTime: &metaFixedClockStart,
+					Reason:             "Failed",
+					Message:            "The certificate request has failed to complete and will be retried: The certificate request failed because of reasons",
+					ObservedGeneration: 3,
+				}},
+				LastFailureTime:        &metaFixedClockStart,
+				Revision:               new(1),
+				FailedIssuanceAttempts: new(1),
+			}),
+		},
+		"success ApplyStatus omits failedIssuanceAttempts and lastFailureTime": {
+			certificate: exampleBundle.Certificate,
+			builder: &testpkg.Builder{
+				CertManagerObjects: []runtime.Object{
+					gen.CertificateFrom(issuingCert,
+						gen.SetCertificateLastFailureTime(metaFixedClockStart),
+						gen.SetCertificateIssuanceAttempts(new(4)),
+					),
+					gen.CertificateRequestFrom(exampleBundle.CertificateRequestReady,
+						gen.AddCertificateRequestAnnotations(map[string]string{
+							cmapi.CertificateRequestRevisionAnnotationKey: "2",
+						}),
+					),
+				},
+				KubeObjects: []runtime.Object{
+					nextPrivateKeySecret,
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: exampleBundle.Certificate.Namespace,
+							Name:      "output",
+							Annotations: map[string]string{
+								"my-custom": "annotation",
+							},
+							Labels: map[string]string{},
+						},
+						Type: corev1.SecretTypeTLS,
+					},
+				},
+				ExpectedEvents: []string{
+					"Normal Issuing The certificate has been successfully issued",
+				},
+			},
+			expSecretUpdateDataCall: &internal.SecretData{
+				Certificate:     exampleBundle.CertificateRequestReady.Status.Certificate,
+				PrivateKey:      exampleBundle.PrivateKeyBytes,
+				CA:              nil,
+				CertificateName: "test",
+				IssuerName:      "ca-issuer",
+				IssuerKind:      "Issuer",
+				IssuerGroup:     "foo.io",
+			},
+			expApplyStatusPatch: mustSerializeApplyStatus(t, exampleBundle.Certificate, cmapi.CertificateStatus{
+				Conditions: []cmapi.CertificateCondition{{
+					Type:               cmapi.CertificateConditionIssuing,
+					Status:             cmmeta.ConditionFalse,
+					LastTransitionTime: &metaFixedClockStart,
+					Reason:             "Issued",
+					Message:            "The certificate has been successfully issued",
+					ObservedGeneration: 3,
+				}},
+				Revision: new(2),
+			}),
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixedClock.SetTime(fixedClockStart)
+			test.builder.Clock = fixedClock
+			test.builder.T = t
+
+			test.builder.ExpectedActions = []testpkg.Action{
+				testpkg.NewAction(coretesting.NewPatchSubresourceActionWithOptions(
+					cmapi.SchemeGroupVersion.WithResource("certificates"),
+					exampleBundle.Certificate.Namespace,
+					exampleBundle.Certificate.Name,
+					types.ApplyPatchType,
+					test.expApplyStatusPatch,
+					metav1.PatchOptions{Force: new(true), FieldManager: testpkg.FieldManager},
+					"status",
+				)),
+			}
+
+			test.builder.InitWithRESTConfig()
+			defer test.builder.Stop()
+
+			w := controllerWrapper{}
+			_, _, err := w.Register(test.builder.Context)
+			require.NoError(t, err)
+			w.controller.localTemporarySigner = testLocalTemporarySignerFn(exampleBundle.LocalTemporaryCertificateBytes)
+
+			var secretsUpdateDataCalled bool
+			w.controller.secretsUpdateData = func(_ context.Context, _ *cmapi.Certificate, secretData internal.SecretData) error {
+				secretsUpdateDataCalled = true
+				assert.Equal(t, *test.expSecretUpdateDataCall, secretData)
+				return nil
+			}
+			t.Cleanup(func() {
+				wantsSecretUpdateDataCall := test.expSecretUpdateDataCall != nil
+				assert.Equal(t, wantsSecretUpdateDataCall, secretsUpdateDataCalled)
+			})
+
+			test.builder.Start()
+
+			err = w.controller.ProcessItem(t.Context(), types.NamespacedName{
+				Namespace: test.certificate.Namespace,
+				Name:      test.certificate.Name,
+			})
+			require.NoError(t, err)
+			test.builder.CheckAndFinish(err)
+		})
+	}
+}
+
+// TestIssuingController_FailIssuanceDoesNotMutateInformerCache checks that a
+// failed issuance is not recorded on the Certificate in the shared informer
+// cache. The gate is pinned both ways because the status write is an update or
+// a patch depending on it, which changes the client verb the reactor matches.
+func TestIssuingController_FailIssuanceDoesNotMutateInformerCache(t *testing.T) {
+	tests := map[string]struct {
+		serverSideApply bool
+		failedVerb      string
+	}{
+		"UpdateStatus, ServerSideApply disabled": {serverSideApply: false, failedVerb: "update"},
+		"ApplyStatus, ServerSideApply enabled":   {serverSideApply: true, failedVerb: "patch"},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, feature.ServerSideApply, test.serverSideApply)
+
+			fixture := failedIssuanceFixture(t)
+
+			fixedClock.SetTime(fixedClockStart)
+			b := &testpkg.Builder{
+				T:                  t,
+				Clock:              fixedClock,
+				CertManagerObjects: []runtime.Object{fixture.issuingCert, fixture.failedRequest},
+				KubeObjects:        []runtime.Object{fixture.nextPrivateKeySecret},
+			}
+			b.InitWithRESTConfig()
+			defer b.Stop()
+
+			w := controllerWrapper{}
+			_, _, err := w.Register(b.Context)
+			require.NoError(t, err)
+			w.controller.localTemporarySigner = testLocalTemporarySignerFn(fixture.bundle.LocalTemporaryCertificateBytes)
+
+			// Fail the status write, so the failure never reaches the API
+			// server and the cache is the only place it could have landed.
+			var failedWriteCalled bool
+			b.FakeCMClient().PrependReactor(test.failedVerb, "certificates", func(coretesting.Action) (bool, runtime.Object, error) {
+				failedWriteCalled = true
+				return true, nil, errors.New("simulated status write failure")
+			})
+
+			b.Start()
+
+			err = w.controller.ProcessItem(t.Context(), types.NamespacedName{
+				Namespace: fixture.bundle.Certificate.Namespace,
+				Name:      fixture.bundle.Certificate.Name,
+			})
+			require.Error(t, err)
+			require.True(t, failedWriteCalled, "the reactor must match the verb the status write actually uses")
+
+			cached, err := b.SharedInformerFactory.Certmanager().V1().Certificates().
+				Lister().Certificates(fixture.bundle.Certificate.Namespace).Get(fixture.bundle.Certificate.Name)
+			require.NoError(t, err)
+			assert.Nil(t, cached.Status.FailedIssuanceAttempts, "failed issuance attempts must not be written to the informer cache")
+			assert.Nil(t, cached.Status.LastFailureTime, "last failure time must not be written to the informer cache")
+		})
+	}
+}
+
+// failedIssuanceObjects is the set of objects a failed-issuance test needs: a
+// Certificate mid-issuance at revision 1, the failed CertificateRequest for
+// revision 2, and the Secret holding the next private key.
+type failedIssuanceObjects struct {
+	bundle               testcrypto.CryptoBundle
+	issuingCert          *cmapi.Certificate
+	failedRequest        *cmapi.CertificateRequest
+	nextPrivateKeySecret *corev1.Secret
+}
+
+func failedIssuanceFixture(t *testing.T) failedIssuanceObjects {
+	t.Helper()
+
+	baseCert := gen.Certificate("test",
+		gen.SetCertificateIssuer(cmmeta.IssuerReference{Name: "ca-issuer", Kind: "Issuer", Group: "foo.io"}),
+		gen.SetCertificateGeneration(3),
+		gen.SetCertificateSecretName("output"),
+		gen.SetCertificateRenewBefore(&metav1.Duration{Duration: time.Hour * 36}),
+		gen.SetCertificateDNSNames("example.com"),
+		gen.SetCertificateRevision(1),
+		gen.SetCertificateNextPrivateKeySecretName(nextPrivateKeySecretName),
+	)
+	bundle := testcrypto.MustCreateCryptoBundle(t, baseCert.DeepCopy(), fixedClock)
+	metaFixedClockStart := metav1.NewTime(fixedClockStart)
+
+	return failedIssuanceObjects{
+		bundle: bundle,
+		issuingCert: gen.CertificateFrom(baseCert.DeepCopy(),
+			gen.SetCertificateStatusCondition(cmapi.CertificateCondition{
+				Type:               cmapi.CertificateConditionIssuing,
+				Status:             cmmeta.ConditionTrue,
+				ObservedGeneration: 3,
+				LastTransitionTime: &metaFixedClockStart,
+			}),
+		),
+		failedRequest: gen.CertificateRequestFrom(bundle.CertificateRequestFailed,
+			gen.AddCertificateRequestAnnotations(map[string]string{
+				cmapi.CertificateRequestRevisionAnnotationKey: "2",
+			}),
+			gen.SetCertificateRequestStatusCondition(cmapi.CertificateRequestCondition{
+				Type:    cmapi.CertificateRequestConditionReady,
+				Status:  cmmeta.ConditionFalse,
+				Reason:  cmapi.CertificateRequestReasonFailed,
+				Message: "The certificate request failed because of reasons",
+			}),
+		),
+		nextPrivateKeySecret: &corev1.Secret{
+			ObjectMeta: nextPrivateKeySecretMeta(bundle.Certificate),
+			Data: map[string][]byte{
+				corev1.TLSPrivateKeyKey: bundle.PrivateKeyBytes,
+			},
+		},
+	}
+}
+
+// mustSerializeApplyStatus renders the bytes internalcertificates.ApplyStatus sends.
+func mustSerializeApplyStatus(t *testing.T, crt *cmapi.Certificate, status cmapi.CertificateStatus) []byte {
+	t.Helper()
+	data, err := json.Marshal(&cmapi.Certificate{
+		TypeMeta:   metav1.TypeMeta{Kind: cmapi.CertificateKind, APIVersion: cmapi.SchemeGroupVersion.Identifier()},
+		ObjectMeta: metav1.ObjectMeta{Namespace: crt.Namespace, Name: crt.Name},
+		Status:     status,
+	})
+	require.NoError(t, err)
+	return data
 }

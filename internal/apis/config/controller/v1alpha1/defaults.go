@@ -97,9 +97,11 @@ var (
 	defaultACMEHTTP01SolverResourceLimitsCPU     = "100m"
 	defaultACMEHTTP01SolverResourceLimitsMemory  = "64Mi"
 	defaultACMEHTTP01SolverRunAsNonRoot          = true
+	defaultACMEHTTP01SolverRuntimeClassName      = ""
 	defaultACMEHTTP01SolverNameservers           = []string{}
 
 	defaultCertificateRequestMinimumBackoffDuration = 1 * time.Hour
+	defaultCertificateRequestMaximumBackoffDuration = 32 * time.Hour
 
 	defaultAutoCertificateAnnotations  = []string{"kubernetes.io/tls-acme"}
 	defaultExtraCertificateAnnotations = []string{}
@@ -193,7 +195,7 @@ func addDefaultingFuncs(scheme *runtime.Scheme) error {
 }
 
 func SetDefaults_ControllerConfiguration(obj *v1alpha1.ControllerConfiguration) {
-	// nolint:staticcheck // For backwards compatibility.
+	//nolint:staticcheck // For backwards compatibility.
 	if obj.APIServerHost == "" {
 		obj.APIServerHost = defaultAPIServerHost
 	}
@@ -234,7 +236,7 @@ func SetDefaults_ControllerConfiguration(obj *v1alpha1.ControllerConfiguration) 
 		obj.EnableCertificateOwnerRef = &defaultEnableCertificateOwnerRef
 	}
 
-	// nolint:staticcheck // For backwards compatibility: migrate deprecated EnableGatewayAPI to GatewayAPIConfig.Enabled.
+	//nolint:staticcheck // For backwards compatibility: migrate deprecated EnableGatewayAPI to GatewayAPIConfig.Enabled.
 	if obj.GatewayAPIConfig.Enabled == nil {
 		if obj.EnableGatewayAPI != nil {
 			obj.GatewayAPIConfig.Enabled = obj.EnableGatewayAPI
@@ -243,10 +245,10 @@ func SetDefaults_ControllerConfiguration(obj *v1alpha1.ControllerConfiguration) 
 		}
 	}
 
-	// nolint:staticcheck // For backwards compatibility: keep deprecated field in sync.
+	//nolint:staticcheck // For backwards compatibility: keep deprecated field in sync.
 	obj.EnableGatewayAPI = obj.GatewayAPIConfig.Enabled
 
-	// nolint:staticcheck // For backwards compatibility: migrate deprecated EnableGatewayAPIListenerSet to GatewayAPIConfig.EnableListenerSet.
+	//nolint:staticcheck // For backwards compatibility: migrate deprecated EnableGatewayAPIListenerSet to GatewayAPIConfig.EnableListenerSet.
 	if obj.GatewayAPIConfig.EnableListenerSet == nil {
 		if obj.EnableGatewayAPIListenerSet != nil {
 			obj.GatewayAPIConfig.EnableListenerSet = obj.EnableGatewayAPIListenerSet
@@ -255,7 +257,7 @@ func SetDefaults_ControllerConfiguration(obj *v1alpha1.ControllerConfiguration) 
 		}
 	}
 
-	// nolint:staticcheck // For backwards compatibility: keep deprecated field in sync.
+	//nolint:staticcheck // For backwards compatibility: keep deprecated field in sync.
 	obj.EnableGatewayAPIListenerSet = obj.GatewayAPIConfig.EnableListenerSet
 
 	if len(obj.CopiedAnnotationPrefixes) == 0 {
@@ -288,6 +290,10 @@ func SetDefaults_ControllerConfiguration(obj *v1alpha1.ControllerConfiguration) 
 
 	if obj.CertificateRequestMinimumBackoffDuration.IsZero() {
 		obj.CertificateRequestMinimumBackoffDuration = sharedv1alpha1.DurationFromTime(defaultCertificateRequestMinimumBackoffDuration)
+	}
+
+	if obj.CertificateRequestMaximumBackoffDuration.IsZero() {
+		obj.CertificateRequestMaximumBackoffDuration = sharedv1alpha1.DurationFromTime(defaultCertificateRequestMaximumBackoffDuration)
 	}
 
 	logsapi.SetRecommendedLoggingConfiguration(&obj.Logging)
@@ -344,6 +350,10 @@ func SetDefaults_ACMEHTTP01Config(obj *v1alpha1.ACMEHTTP01Config) {
 
 	if obj.SolverRunAsNonRoot == nil {
 		obj.SolverRunAsNonRoot = &defaultACMEHTTP01SolverRunAsNonRoot
+	}
+
+	if obj.SolverRuntimeClassName == "" {
+		obj.SolverRuntimeClassName = defaultACMEHTTP01SolverRuntimeClassName
 	}
 
 	if len(obj.SolverNameservers) == 0 {
